@@ -1,0 +1,10 @@
+bin/
+tmp/
+*.test
+*.out
+.git
+.idea
+.vscode
+.DS_Store
+Dockerfile
+.dockerignore
