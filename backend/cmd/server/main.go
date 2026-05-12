@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/go-chi/httprate"
 
 	"github.com/mountest/backend/internal/auth"
 	"github.com/mountest/backend/internal/config"
@@ -22,6 +23,19 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	// Fail-fast: не даём подняться в проде с дефолтными секретами.
+	// CookieSecure=true — наш индикатор прод-окружения.
+	if cfg.CookieSecure {
+		if cfg.JWTSecret == "" || cfg.JWTSecret == "change-me" ||
+			cfg.JWTSecret == "change-me-in-production-please-32+chars" ||
+			len(cfg.JWTSecret) < 32 {
+			log.Fatal("JWT_SECRET must be a strong random value in production (use: openssl rand -hex 32)")
+		}
+		if cfg.AdminPassword == "" || cfg.AdminPassword == "admin123" {
+			log.Fatal("ADMIN_PASSWORD must be set to a strong value in production")
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -36,7 +50,7 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
-	if err := seed.EnsureAdmin(ctx, pool, cfg.AdminUsername, cfg.AdminPassword); err != nil {
+	if err := seed.EnsureAdmin(ctx, pool, cfg.AdminUsername, cfg.AdminPassword, auth.RoleSuperadmin); err != nil {
 		log.Fatalf("seed admin: %v", err)
 	}
 	if cfg.SeedDemo {
@@ -48,6 +62,7 @@ func main() {
 	authSvc := auth.NewService(cfg.JWTSecret, cfg.CookieSecure)
 	pub := &handlers.PublicHandler{Pool: pool}
 	adm := &handlers.AdminHandler{Pool: pool, Auth: authSvc}
+	usr := &handlers.UsersHandler{Pool: pool}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -72,7 +87,7 @@ func main() {
 	})
 
 	r.Route("/api", func(r chi.Router) {
-		// Публичные эндпоинты
+		// ---------- public ----------
 		r.Get("/subjects", pub.ListSubjects)
 		r.Get("/subjects/{id}/variants", pub.ListSubjectVariants)
 
@@ -85,28 +100,49 @@ func main() {
 		r.Post("/attempts/{id}/finish", pub.FinishAttempt)
 		r.Get("/attempts/{id}/result", pub.GetResult)
 
-		// Админ
-		r.Post("/admin/login", adm.Login)
+		// ---------- admin: login (с rate-limit) ----------
+		r.Group(func(r chi.Router) {
+			// 10 попыток в минуту с одного IP — этого достаточно для людей и режет ботов.
+			r.Use(httprate.LimitByIP(10, time.Minute))
+			r.Post("/admin/login", adm.Login)
+		})
 		r.Post("/admin/logout", adm.Logout)
+
+		// ---------- admin: всё остальное (нужна авторизация) ----------
 		r.Group(func(r chi.Router) {
 			r.Use(authSvc.Middleware)
 			r.Get("/admin/me", adm.Me)
 
+			// Subjects: список открыт всем админам, мутации — только superadmin.
 			r.Get("/admin/subjects", adm.ListSubjects)
-			r.Post("/admin/subjects", adm.CreateSubject)
-			r.Put("/admin/subjects/{id}", adm.UpdateSubject)
-			r.Delete("/admin/subjects/{id}", adm.DeleteSubject)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireSuperadmin)
+				r.Post("/admin/subjects", adm.CreateSubject)
+				r.Put("/admin/subjects/{id}", adm.UpdateSubject)
+				r.Delete("/admin/subjects/{id}", adm.DeleteSubject)
+			})
 
+			// Variants: editor видит и редактирует только свои (ownership внутри хендлеров).
 			r.Get("/admin/variants", adm.ListVariants)
 			r.Post("/admin/variants", adm.CreateVariant)
 			r.Put("/admin/variants/{id}", adm.UpdateVariant)
 			r.Delete("/admin/variants/{id}", adm.DeleteVariant)
 
+			// Questions: ownership через variant внутри хендлеров.
 			r.Get("/admin/questions", adm.ListQuestions)
 			r.Get("/admin/questions/{id}", adm.GetQuestion)
 			r.Post("/admin/questions", adm.CreateQuestion)
 			r.Put("/admin/questions/{id}", adm.UpdateQuestion)
 			r.Delete("/admin/questions/{id}", adm.DeleteQuestion)
+
+			// Users: только superadmin.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireSuperadmin)
+				r.Get("/admin/users", usr.List)
+				r.Post("/admin/users", usr.Create)
+				r.Post("/admin/users/{id}/reset-password", usr.ResetPassword)
+				r.Delete("/admin/users/{id}", usr.Delete)
+			})
 		})
 	})
 

@@ -9,6 +9,7 @@ import AdminLoginPage from "./admin/AdminLoginPage";
 import AdminSubjectsPage from "./admin/AdminSubjectsPage";
 import AdminVariantsPage from "./admin/AdminVariantsPage";
 import AdminQuestionsPage from "./admin/AdminQuestionsPage";
+import AdminUsersPage from "./admin/AdminUsersPage";
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
           <Route index element={<AdminSubjectsPage />} />
           <Route path="variants" element={<AdminVariantsPage />} />
           <Route path="questions" element={<AdminQuestionsPage />} />
+          <Route path="users" element={<AdminUsersPage />} />
         </Route>
       </Route>
     </Routes>

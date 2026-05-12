@@ -2,26 +2,60 @@ package seed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
-func EnsureAdmin(ctx context.Context, pool *pgxpool.Pool, username, password string) error {
-	var id uuid.UUID
-	err := pool.QueryRow(ctx, `SELECT id FROM admins WHERE username=$1`, username).Scan(&id)
-	if err == nil {
+// EnsureAdmin создаёт суперадмина при первом старте и поддерживает его
+// пароль/роль в соответствии с .env: если значение поменяли — обновим.
+func EnsureAdmin(ctx context.Context, pool *pgxpool.Pool, username, password, role string) error {
+	var (
+		id           uuid.UUID
+		existingHash string
+		existingRole string
+	)
+	err := pool.QueryRow(ctx,
+		`SELECT id, password_hash, role FROM admins WHERE username=$1`,
+		username,
+	).Scan(&id, &existingHash, &existingRole)
+
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if hashErr != nil {
+			return fmt.Errorf("hash password: %w", hashErr)
+		}
+		_, err = pool.Exec(ctx,
+			`INSERT INTO admins (username, password_hash, role) VALUES ($1, $2, $3)`,
+			username, string(hash), role,
+		)
+		return err
+	case err != nil:
+		return fmt.Errorf("lookup admin: %w", err)
+	}
+
+	needPasswordUpdate := bcrypt.CompareHashAndPassword([]byte(existingHash), []byte(password)) != nil
+	needRoleUpdate := existingRole != role
+	if !needPasswordUpdate && !needRoleUpdate {
 		return nil
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
+
+	newHash := existingHash
+	if needPasswordUpdate {
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if hashErr != nil {
+			return fmt.Errorf("hash password: %w", hashErr)
+		}
+		newHash = string(hash)
 	}
 	_, err = pool.Exec(ctx,
-		`INSERT INTO admins (username, password_hash) VALUES ($1, $2)`,
-		username, string(hash),
+		`UPDATE admins SET password_hash=$1, role=$2 WHERE id=$3`,
+		newHash, role, id,
 	)
 	return err
 }
@@ -46,10 +80,16 @@ func EnsureDemo(ctx context.Context, pool *pgxpool.Pool) error {
 	if err == nil {
 		return nil
 	}
+
+	var superID uuid.UUID
+	_ = pool.QueryRow(ctx,
+		`SELECT id FROM admins WHERE role='superadmin' ORDER BY created_at LIMIT 1`,
+	).Scan(&superID)
+
 	err = pool.QueryRow(ctx,
-		`INSERT INTO variants (subject_id, title, duration_minutes)
-		 VALUES ($1, $2, $3) RETURNING id`,
-		mathID, "Демо-вариант №1", 30,
+		`INSERT INTO variants (subject_id, title, duration_minutes, created_by)
+		 VALUES ($1, $2, $3, $4) RETURNING id`,
+		mathID, "Демо-вариант №1", 30, nullableUUID(superID),
 	).Scan(&variantID)
 	if err != nil {
 		return fmt.Errorf("insert variant: %w", err)
@@ -127,4 +167,11 @@ func upsertSubject(ctx context.Context, pool *pgxpool.Pool, name string) (uuid.U
 		`INSERT INTO subjects (name) VALUES ($1) RETURNING id`, name,
 	).Scan(&id)
 	return id, err
+}
+
+func nullableUUID(id uuid.UUID) any {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
 }

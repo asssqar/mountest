@@ -2,6 +2,10 @@
 .env.prod
 *.local
 
+# Локальные one-off скрипты с секретами — никогда в репозиторий.
+tmp_bootstrap/
+*credentials*.txt
+
 # Go
 backend/bin/
 backend/tmp/

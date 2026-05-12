@@ -10,6 +10,30 @@ export type Variant = {
   title: string;
   durationMinutes: number;
   questionsCount: number;
+  createdBy?: string | null;
+};
+
+export type AdminRole = "superadmin" | "editor";
+
+export type AdminMe = {
+  username: string;
+  role: AdminRole;
+};
+
+export type AdminUser = {
+  id: string;
+  username: string;
+  role: AdminRole;
+  createdAt: string;
+};
+
+export type AdminUserCreated = AdminUser & {
+  password: string;
+};
+
+export type AdminPasswordReset = {
+  id: string;
+  password: string;
 };
 
 export type AnswerOption = {

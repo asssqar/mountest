@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -39,11 +41,14 @@ func (h *AdminHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var id uuid.UUID
-	var hash string
+	var (
+		id   uuid.UUID
+		hash string
+		role string
+	)
 	err := h.Pool.QueryRow(r.Context(),
-		`SELECT id, password_hash FROM admins WHERE username=$1`, req.Username,
-	).Scan(&id, &hash)
+		`SELECT id, password_hash, role FROM admins WHERE username=$1`, req.Username,
+	).Scan(&id, &hash, &role)
 	if err != nil {
 		httpx.WriteError(w, http.StatusUnauthorized, "Неверный логин или пароль")
 		return
@@ -53,13 +58,16 @@ func (h *AdminHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, exp, err := h.Auth.Issue(id)
+	tok, exp, err := h.Auth.Issue(id, role)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "Не удалось выдать токен")
 		return
 	}
 	h.Auth.SetCookie(w, tok, exp)
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"username": req.Username})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"username": req.Username,
+		"role":     role,
+	})
 }
 
 func (h *AdminHandler) Logout(w http.ResponseWriter, _ *http.Request) {
@@ -73,14 +81,86 @@ func (h *AdminHandler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	var username string
+	var username, role string
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT username FROM admins WHERE id=$1`, id,
-	).Scan(&username); err != nil {
+		`SELECT username, role FROM admins WHERE id=$1`, id,
+	).Scan(&username, &role); err != nil {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"username": username})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"username": username,
+		"role":     role,
+	})
+}
+
+// ---- ownership helpers ----
+
+// currentAdminUUID — парсит UUID авторизованного пользователя из контекста.
+// Если по какой-то причине нет — возвращает uuid.Nil (хендлер должен реагировать).
+func currentAdminUUID(ctx context.Context) uuid.UUID {
+	idStr, ok := auth.AdminIDFrom(ctx)
+	if !ok {
+		return uuid.Nil
+	}
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		return uuid.Nil
+	}
+	return id
+}
+
+// ensureVariantAccess: суперадмин — всегда ОК; editor — только если он владелец.
+// Возвращает (httpStatus, errMsg). 0 — доступ разрешён.
+func (h *AdminHandler) ensureVariantAccess(ctx context.Context, variantID uuid.UUID) (int, string) {
+	if auth.IsSuperadmin(ctx) {
+		return 0, ""
+	}
+	adminID := currentAdminUUID(ctx)
+	if adminID == uuid.Nil {
+		return http.StatusUnauthorized, "unauthorized"
+	}
+	var owner *uuid.UUID
+	err := h.Pool.QueryRow(ctx,
+		`SELECT created_by FROM variants WHERE id=$1`, variantID,
+	).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return http.StatusNotFound, "Вариант не найден"
+	}
+	if err != nil {
+		return http.StatusInternalServerError, err.Error()
+	}
+	if owner == nil || *owner != adminID {
+		return http.StatusForbidden, "Нет доступа к этому варианту"
+	}
+	return 0, ""
+}
+
+// ensureQuestionAccess — то же, но через JOIN questions→variants.
+func (h *AdminHandler) ensureQuestionAccess(ctx context.Context, questionID uuid.UUID) (int, string) {
+	if auth.IsSuperadmin(ctx) {
+		return 0, ""
+	}
+	adminID := currentAdminUUID(ctx)
+	if adminID == uuid.Nil {
+		return http.StatusUnauthorized, "unauthorized"
+	}
+	var owner *uuid.UUID
+	err := h.Pool.QueryRow(ctx,
+		`SELECT v.created_by FROM questions q
+		 JOIN variants v ON v.id = q.variant_id
+		 WHERE q.id=$1`, questionID,
+	).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return http.StatusNotFound, "Вопрос не найден"
+	}
+	if err != nil {
+		return http.StatusInternalServerError, err.Error()
+	}
+	if owner == nil || *owner != adminID {
+		return http.StatusForbidden, "Нет доступа к этому вопросу"
+	}
+	return 0, ""
 }
 
 // ---- subjects ----
@@ -182,20 +262,38 @@ type variantReq struct {
 }
 
 func (h *AdminHandler) ListVariants(w http.ResponseWriter, r *http.Request) {
-	q := `SELECT v.id, v.subject_id, v.title, v.duration_minutes,
-	             (SELECT COUNT(*) FROM questions q WHERE q.variant_id = v.id) AS questions_count
+	q := `SELECT v.id, v.subject_id, v.title, v.duration_minutes, v.created_by,
+	             (SELECT COUNT(*) FROM questions qq WHERE qq.variant_id = v.id) AS questions_count
 	      FROM variants v`
 	args := []any{}
+	conds := []string{}
+
+	// Editor видит только свои варианты.
+	if !auth.IsSuperadmin(r.Context()) {
+		adminID := currentAdminUUID(r.Context())
+		if adminID == uuid.Nil {
+			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		conds = append(conds, "v.created_by = $1")
+		args = append(args, adminID)
+	}
+
 	if subj := r.URL.Query().Get("subjectId"); subj != "" {
 		id, ok := httpx.ParseUUID(subj)
 		if !ok {
 			httpx.WriteError(w, http.StatusBadRequest, "bad subjectId")
 			return
 		}
-		q += ` WHERE v.subject_id = $1`
+		placeholder := "$" + strconv.Itoa(len(args)+1)
+		conds = append(conds, "v.subject_id = "+placeholder)
 		args = append(args, id)
 	}
-	q += ` ORDER BY v.title`
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += " ORDER BY v.title"
+
 	rows, err := h.Pool.Query(r.Context(), q, args...)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -203,16 +301,17 @@ func (h *AdminHandler) ListVariants(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type item struct {
-		ID              uuid.UUID `json:"id"`
-		SubjectID       uuid.UUID `json:"subjectId"`
-		Title           string    `json:"title"`
-		DurationMinutes int       `json:"durationMinutes"`
-		QuestionsCount  int       `json:"questionsCount"`
+		ID              uuid.UUID  `json:"id"`
+		SubjectID       uuid.UUID  `json:"subjectId"`
+		Title           string     `json:"title"`
+		DurationMinutes int        `json:"durationMinutes"`
+		QuestionsCount  int        `json:"questionsCount"`
+		CreatedBy       *uuid.UUID `json:"createdBy,omitempty"`
 	}
 	out := []item{}
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.ID, &it.SubjectID, &it.Title, &it.DurationMinutes, &it.QuestionsCount); err != nil {
+		if err := rows.Scan(&it.ID, &it.SubjectID, &it.Title, &it.DurationMinutes, &it.CreatedBy, &it.QuestionsCount); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -234,11 +333,16 @@ func (h *AdminHandler) CreateVariant(w http.ResponseWriter, r *http.Request) {
 	if req.DurationMinutes <= 0 {
 		req.DurationMinutes = 60
 	}
+	adminID := currentAdminUUID(r.Context())
+	if adminID == uuid.Nil {
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	var id uuid.UUID
 	err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO variants (subject_id, title, duration_minutes)
-		 VALUES ($1, $2, $3) RETURNING id`,
-		req.SubjectID, strings.TrimSpace(req.Title), req.DurationMinutes,
+		`INSERT INTO variants (subject_id, title, duration_minutes, created_by)
+		 VALUES ($1, $2, $3, $4) RETURNING id`,
+		req.SubjectID, strings.TrimSpace(req.Title), req.DurationMinutes, adminID,
 	).Scan(&id)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -251,6 +355,10 @@ func (h *AdminHandler) UpdateVariant(w http.ResponseWriter, r *http.Request) {
 	id, ok := httpx.ParseUUID(chi.URLParam(r, "id"))
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if status, msg := h.ensureVariantAccess(r.Context(), id); status != 0 {
+		httpx.WriteError(w, status, msg)
 		return
 	}
 	var req variantReq
@@ -284,6 +392,10 @@ func (h *AdminHandler) DeleteVariant(w http.ResponseWriter, r *http.Request) {
 	id, ok := httpx.ParseUUID(chi.URLParam(r, "id"))
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if status, msg := h.ensureVariantAccess(r.Context(), id); status != 0 {
+		httpx.WriteError(w, status, msg)
 		return
 	}
 	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM variants WHERE id=$1`, id); err != nil {
@@ -334,6 +446,10 @@ func (h *AdminHandler) ListQuestions(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad variantId")
 		return
 	}
+	if status, msg := h.ensureVariantAccess(r.Context(), vid); status != 0 {
+		httpx.WriteError(w, status, msg)
+		return
+	}
 	out, err := loadQuestionsWithOptions(r.Context(), h.Pool, vid, true)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -346,6 +462,10 @@ func (h *AdminHandler) GetQuestion(w http.ResponseWriter, r *http.Request) {
 	id, ok := httpx.ParseUUID(chi.URLParam(r, "id"))
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if status, msg := h.ensureQuestionAccess(r.Context(), id); status != 0 {
+		httpx.WriteError(w, status, msg)
 		return
 	}
 	q, err := loadQuestion(r.Context(), h.Pool, id, true)
@@ -368,6 +488,10 @@ func (h *AdminHandler) CreateQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.VariantID == uuid.Nil || strings.TrimSpace(req.Text) == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "Укажите вариант и текст вопроса")
+		return
+	}
+	if status, msg := h.ensureVariantAccess(r.Context(), req.VariantID); status != 0 {
+		httpx.WriteError(w, status, msg)
 		return
 	}
 	if len(req.Options) < 2 {
@@ -438,6 +562,10 @@ func (h *AdminHandler) UpdateQuestion(w http.ResponseWriter, r *http.Request) {
 	id, ok := httpx.ParseUUID(chi.URLParam(r, "id"))
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if status, msg := h.ensureQuestionAccess(r.Context(), id); status != 0 {
+		httpx.WriteError(w, status, msg)
 		return
 	}
 	var req questionReq
@@ -516,9 +644,14 @@ func (h *AdminHandler) DeleteQuestion(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
+	if status, msg := h.ensureQuestionAccess(r.Context(), id); status != 0 {
+		httpx.WriteError(w, status, msg)
+		return
+	}
 	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM questions WHERE id=$1`, id); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+

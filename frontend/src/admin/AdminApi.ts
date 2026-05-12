@@ -1,10 +1,18 @@
 import { api } from "../api/client";
-import type { Question, Subject, Variant } from "../api/types";
+import type {
+  AdminMe,
+  AdminPasswordReset,
+  AdminUser,
+  AdminUserCreated,
+  Question,
+  Subject,
+  Variant,
+} from "../api/types";
 
 export const adminApi = {
-  me: () => api.get<{ username: string }>("/admin/me"),
+  me: () => api.get<AdminMe>("/admin/me"),
   login: (username: string, password: string) =>
-    api.post<{ username: string }>("/admin/login", { username, password }),
+    api.post<AdminMe>("/admin/login", { username, password }),
   logout: () => api.post<void>("/admin/logout"),
 
   listSubjects: () => api.get<Subject[]>("/admin/subjects"),
@@ -44,4 +52,12 @@ export const adminApi = {
     },
   ) => api.put<{ id: string }>(`/admin/questions/${id}`, input),
   deleteQuestion: (id: string) => api.delete<void>(`/admin/questions/${id}`),
+
+  // ---- users (только superadmin) ----
+  listUsers: () => api.get<AdminUser[]>("/admin/users"),
+  createUser: (email: string) =>
+    api.post<AdminUserCreated>("/admin/users", { email }),
+  resetUserPassword: (id: string) =>
+    api.post<AdminPasswordReset>(`/admin/users/${id}/reset-password`),
+  deleteUser: (id: string) => api.delete<void>(`/admin/users/${id}`),
 };

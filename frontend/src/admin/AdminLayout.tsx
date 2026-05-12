@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { adminApi } from "./AdminApi";
 import { ApiError } from "../api/client";
+import type { AdminMe } from "../api/types";
 
 export default function AdminLayout() {
-  const [me, setMe] = useState<{ username: string } | null>(null);
+  const [me, setMe] = useState<AdminMe | null>(null);
   const [checked, setChecked] = useState(false);
   const nav = useNavigate();
   const location = useLocation();
@@ -35,6 +36,16 @@ export default function AdminLayout() {
     return <Outlet />;
   }
 
+  const isSuper = me.role === "superadmin";
+
+  // editor не имеет доступа к управлению предметами — кидаем на варианты.
+  if (!isSuper && (location.pathname === "/admin" || location.pathname === "/admin/")) {
+    return <Navigate to="/admin/variants" replace />;
+  }
+  if (!isSuper && location.pathname.startsWith("/admin/users")) {
+    return <Navigate to="/admin/variants" replace />;
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -43,7 +54,12 @@ export default function AdminLayout() {
             ← На сайт
           </Link>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">Админка</h1>
-          <p className="text-sm text-neutral-500">Вы вошли как {me.username}</p>
+          <p className="text-sm text-neutral-500">
+            {me.username}
+            <span className="ml-2 inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-700">
+              {isSuper ? "суперадмин" : "редактор"}
+            </span>
+          </p>
         </div>
         <button
           className="btn-secondary"
@@ -62,12 +78,13 @@ export default function AdminLayout() {
       </div>
 
       <nav className="flex gap-4 border-b border-neutral-200">
-        <AdminTab to="/admin">Предметы</AdminTab>
+        {isSuper ? <AdminTab to="/admin">Предметы</AdminTab> : null}
         <AdminTab to="/admin/variants">Варианты</AdminTab>
         <AdminTab to="/admin/questions">Вопросы</AdminTab>
+        {isSuper ? <AdminTab to="/admin/users">Пользователи</AdminTab> : null}
       </nav>
 
-      <Outlet />
+      <Outlet context={{ me }} />
     </div>
   );
 }

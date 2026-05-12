@@ -10,14 +10,23 @@ import (
 	"github.com/google/uuid"
 )
 
-const CookieName = "mountest_admin"
+const (
+	CookieName = "mountest_admin"
+
+	RoleSuperadmin = "superadmin"
+	RoleEditor     = "editor"
+)
 
 type ctxKey string
 
-const adminIDKey ctxKey = "adminID"
+const (
+	adminIDKey   ctxKey = "adminID"
+	adminRoleKey ctxKey = "adminRole"
+)
 
 type Claims struct {
 	AdminID string `json:"sub"`
+	Role    string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -30,10 +39,11 @@ func NewService(secret string, secure bool) *Service {
 	return &Service{secret: []byte(secret), secure: secure}
 }
 
-func (s *Service) Issue(adminID uuid.UUID) (string, time.Time, error) {
+func (s *Service) Issue(adminID uuid.UUID, role string) (string, time.Time, error) {
 	exp := time.Now().Add(7 * 24 * time.Hour)
 	claims := Claims{
 		AdminID: adminID.String(),
+		Role:    role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(exp),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -99,11 +109,36 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), adminIDKey, claims.AdminID)
+		ctx = context.WithValue(ctx, adminRoleKey, claims.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RequireSuperadmin отбивает запрос 403, если у пользователя роль не superadmin.
+// Должен использоваться ПОСЛЕ Middleware.
+func RequireSuperadmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		role, _ := AdminRoleFrom(r.Context())
+		if role != RoleSuperadmin {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
 func AdminIDFrom(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(adminIDKey).(string)
 	return v, ok
+}
+
+func AdminRoleFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(adminRoleKey).(string)
+	return v, ok
+}
+
+// IsSuperadmin — удобный шорткат для бизнес-логики хендлеров.
+func IsSuperadmin(ctx context.Context) bool {
+	role, _ := AdminRoleFrom(ctx)
+	return role == RoleSuperadmin
 }

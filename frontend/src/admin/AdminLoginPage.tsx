@@ -29,11 +29,12 @@ export default function AdminLoginPage() {
       <h1 className="mb-4 text-2xl font-semibold tracking-tight">Вход в админку</h1>
       <form onSubmit={onSubmit} className="card space-y-3">
         <div>
-          <label className="label">Логин</label>
+          <label className="label">Логин или email</label>
           <input
             className="input"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
             required
           />
         </div>
@@ -44,6 +45,7 @@ export default function AdminLoginPage() {
             className="input"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
             required
           />
         </div>
