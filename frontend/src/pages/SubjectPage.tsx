@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import type { Attempt, Subject, Variant } from "../api/types";
 import { useGuest } from "../hooks/useGuest";
+import { saveAttemptToken } from "../hooks/attemptTokens";
 
 export default function SubjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -39,6 +40,10 @@ export default function SubjectPage() {
         variantId,
         guestSessionId: guest.id,
       });
+      // Без токена дальше /attempts/{id} вернёт 401 — обязательно сохраняем сразу.
+      if (att.attemptToken) {
+        saveAttemptToken(att.id, att.attemptToken);
+      }
       nav(`/attempts/${att.id}`);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "Не удалось начать тест");
@@ -48,6 +53,10 @@ export default function SubjectPage() {
 
   if (loading) return <p className="text-neutral-500">Загрузка...</p>;
   if (err) return <p className="text-red-600">{err}</p>;
+  // Предмет без вариантов не попадает в публичный список — убираем прямую ссылку на пустую страницу.
+  if (variants.length === 0) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <div className="space-y-6">
@@ -69,15 +78,18 @@ export default function SubjectPage() {
         </div>
       ) : null}
 
-      {variants.length === 0 ? (
-        <p className="text-neutral-500">Для этого предмета пока нет вариантов.</p>
-      ) : (
-        <ul className="space-y-3">
+      <ul className="space-y-3">
           {variants.map((v) => (
             <li key={v.id} className="card flex items-center justify-between">
               <div>
                 <p className="text-base font-medium">{v.title}</p>
                 <p className="text-sm text-neutral-500">
+                  {v.topic ? (
+                    <>
+                      <span>{v.topic}</span>
+                      <span className="mx-1.5">·</span>
+                    </>
+                  ) : null}
                   {v.questionsCount} вопросов · {v.durationMinutes} мин (опц. таймер)
                 </p>
               </div>
@@ -90,8 +102,7 @@ export default function SubjectPage() {
               </button>
             </li>
           ))}
-        </ul>
-      )}
+      </ul>
     </div>
   );
 }

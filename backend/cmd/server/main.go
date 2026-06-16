@@ -60,9 +60,17 @@ func main() {
 	}
 
 	authSvc := auth.NewService(cfg.JWTSecret, cfg.CookieSecure)
-	pub := &handlers.PublicHandler{Pool: pool}
+	pub := &handlers.PublicHandler{
+		Pool:          pool,
+		AttemptSecret: handlers.DeriveAttemptSecret(cfg.JWTSecret),
+	}
 	adm := &handlers.AdminHandler{Pool: pool, Auth: authSvc}
 	usr := &handlers.UsersHandler{Pool: pool}
+	upl := &handlers.UploadHandler{Dir: cfg.UploadDir}
+	if err := upl.EnsureDir(); err != nil {
+		log.Fatalf("ensure upload dir: %v", err)
+	}
+	log.Printf("upload directory: %s", cfg.UploadDir)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -87,18 +95,31 @@ func main() {
 	})
 
 	r.Route("/api", func(r chi.Router) {
-		// ---------- public ----------
+		// ---------- public reads (без лимита, кешируется CDN/Caddy) ----------
 		r.Get("/subjects", pub.ListSubjects)
 		r.Get("/subjects/{id}/variants", pub.ListSubjectVariants)
-
-		r.Post("/guest-sessions", pub.CreateGuest)
 		r.Get("/guest-sessions/{id}", pub.GetGuest)
-
-		r.Post("/attempts", pub.StartAttempt)
 		r.Get("/attempts/{id}", pub.GetAttempt)
-		r.Put("/attempts/{id}/answer", pub.SaveAnswer)
-		r.Post("/attempts/{id}/finish", pub.FinishAttempt)
 		r.Get("/attempts/{id}/result", pub.GetResult)
+
+		// Картинки вопросов отдаём публично: их видят ученики во время попытки.
+		r.Get("/uploads/{name}", upl.Serve)
+
+		// ---------- public writes: грубый rate-limit, чтобы не было спам-ботов ----------
+		// 30 регистраций гостей и 30 стартов попыток с одного IP в минуту — с запасом для класса.
+		r.Group(func(r chi.Router) {
+			r.Use(httprate.LimitByIP(30, time.Minute))
+			r.Post("/guest-sessions", pub.CreateGuest)
+			r.Post("/attempts", pub.StartAttempt)
+			r.Post("/attempts/{id}/finish", pub.FinishAttempt)
+		})
+
+		// Сохранение ответа триггерится автоматически на каждый клик — лимит щедрее.
+		// 600 в минуту = 10 в секунду на IP, выше реально не нужно (debounce на фронте отсутствует).
+		r.Group(func(r chi.Router) {
+			r.Use(httprate.LimitByIP(600, time.Minute))
+			r.Put("/attempts/{id}/answer", pub.SaveAnswer)
+		})
 
 		// ---------- admin: login (с rate-limit) ----------
 		r.Group(func(r chi.Router) {
@@ -127,6 +148,8 @@ func main() {
 			r.Post("/admin/variants", adm.CreateVariant)
 			r.Put("/admin/variants/{id}", adm.UpdateVariant)
 			r.Delete("/admin/variants/{id}", adm.DeleteVariant)
+			r.Post("/admin/variants/{id}/publish", adm.SetVariantPublished)
+			r.Post("/admin/variants/{id}/import-questions", adm.ImportQuestions)
 
 			// Questions: ownership через variant внутри хендлеров.
 			r.Get("/admin/questions", adm.ListQuestions)
@@ -134,6 +157,9 @@ func main() {
 			r.Post("/admin/questions", adm.CreateQuestion)
 			r.Put("/admin/questions/{id}", adm.UpdateQuestion)
 			r.Delete("/admin/questions/{id}", adm.DeleteQuestion)
+
+			// Картинки: загружать может любой залогиненный админ.
+			r.Post("/admin/upload", upl.Upload)
 
 			// Users: только superadmin.
 			r.Group(func(r chi.Router) {

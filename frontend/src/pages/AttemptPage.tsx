@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, ApiError } from "../api/client";
+import { api, ApiError, resolveImageUrl, withAttemptToken } from "../api/client";
 import type { Attempt, AttemptResult } from "../api/types";
+import { getAttemptToken } from "../hooks/attemptTokens";
 
 export default function AttemptPage() {
   const { id } = useParams<{ id: string }>();
@@ -21,8 +22,15 @@ export default function AttemptPage() {
 
   useEffect(() => {
     if (!id) return;
+    const token = getAttemptToken(id);
+    if (!token) {
+      // Без токена бэкенд вернёт 401 — пусть пользователь начнёт попытку заново.
+      setErr("Эта попытка не привязана к этому браузеру. Начните заново на странице предмета.");
+      setLoading(false);
+      return;
+    }
     api
-      .get<Attempt>(`/attempts/${id}`)
+      .get<Attempt>(`/attempts/${id}`, withAttemptToken(token))
       .then((a) => {
         if (a.finishedAt) {
           nav(`/attempts/${a.id}/result`, { replace: true });
@@ -40,7 +48,12 @@ export default function AttemptPage() {
     finishedRef.current = true;
     setSubmitting(true);
     try {
-      const res = await api.post<AttemptResult>(`/attempts/${attempt.id}/finish`);
+      const token = getAttemptToken(attempt.id);
+      const res = await api.post<AttemptResult>(
+        `/attempts/${attempt.id}/finish`,
+        undefined,
+        withAttemptToken(token),
+      );
       nav(`/attempts/${attempt.id}/result`, { replace: true, state: { result: res } });
     } catch (e) {
       finishedRef.current = false;
@@ -81,10 +94,12 @@ export default function AttemptPage() {
     setAnswers((prev) => ({ ...prev, [questionId]: selected }));
     setSavingMap((m) => ({ ...m, [questionId]: true }));
     try {
-      await api.put(`/attempts/${attempt.id}/answer`, {
-        questionId,
-        selectedOptionIds: selected,
-      });
+      const token = getAttemptToken(attempt.id);
+      await api.put(
+        `/attempts/${attempt.id}/answer`,
+        { questionId, selectedOptionIds: selected },
+        withAttemptToken(token),
+      );
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "Не удалось сохранить ответ");
     } finally {
@@ -158,6 +173,13 @@ export default function AttemptPage() {
             </span>
           </div>
           <p className="whitespace-pre-wrap text-neutral-900">{activeQuestion.text}</p>
+          {activeQuestion.imageUrl ? (
+            <img
+              src={resolveImageUrl(activeQuestion.imageUrl) ?? ""}
+              alt=""
+              className="max-h-96 w-full rounded-md border border-neutral-200 bg-white object-contain"
+            />
+          ) : null}
           <ul className="space-y-2">
             {activeQuestion.options.map((opt) => {
               const selected = (answers[activeQuestion.id] ?? []).includes(opt.id);

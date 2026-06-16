@@ -8,9 +8,14 @@ export type Variant = {
   id: string;
   subjectId: string;
   title: string;
+  /** Необязательная тема — показывается под названием теста */
+  topic?: string | null;
   durationMinutes: number;
   questionsCount: number;
-  createdBy?: string | null;
+  /** Опубликован ли вариант. Поле приходит только из админских ручек. */
+  isPublished?: boolean;
+  /** Только у superadmin в списке вариантов: логин/email автора */
+  createdByUsername?: string | null;
 };
 
 export type AdminRole = "superadmin" | "editor";
@@ -48,6 +53,7 @@ export type Question = {
   variantId: string;
   position: number;
   text: string;
+  imageUrl?: string | null;
   options: AnswerOption[];
 };
 
@@ -68,14 +74,22 @@ export type Attempt = {
   questions: Question[];
   answers: Record<string, string[]>;
   guest?: Guest;
+  /** Возвращается ТОЛЬКО на POST /attempts. Дальше клиент сам шлёт его в X-Attempt-Token. */
+  attemptToken?: string;
 };
 
-export type ResultErrorEntry = {
+export type ReviewStatus = "correct" | "incorrect" | "unanswered";
+
+/** Один вопрос на экране результата — со статусом, выбранными и правильными опциями. */
+export type ReviewEntry = {
   questionId: string;
+  position: number;
   questionText: string;
+  questionImageUrl?: string | null;
   options: AnswerOption[];
   selectedOptionIds: string[];
   correctOptionIds: string[];
+  status: ReviewStatus;
 };
 
 export type AttemptResult = {
@@ -84,6 +98,7 @@ export type AttemptResult = {
   total: number;
   startedAt: string;
   finishedAt: string;
-  errors: ResultErrorEntry[];
+  /** Все вопросы попытки в порядке. Фронт сам решает, фильтровать ли по статусу. */
+  review: ReviewEntry[];
   guest?: Guest;
 };

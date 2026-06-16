@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { adminApi } from "./AdminApi";
-import { ApiError } from "../api/client";
+import { ApiError, resolveImageUrl } from "../api/client";
 import type { Question, Variant } from "../api/types";
 
 type OptionDraft = { id?: string; text: string; isCorrect: boolean };
@@ -10,6 +10,7 @@ type QuestionForm = {
   id: string | null;
   text: string;
   position: number;
+  imageUrl: string | null;
   options: OptionDraft[];
 };
 
@@ -17,11 +18,24 @@ const emptyForm: QuestionForm = {
   id: null,
   text: "",
   position: 0,
+  imageUrl: null,
   options: [
     { text: "", isCorrect: false },
     { text: "", isCorrect: false },
   ],
 };
+
+const importExample = `1. Файловая система подразделяется на
+* внутреннюю и внешнюю
+* простую и сложную
+* простую и иерархическую
+* динамическую и статическую
+
+2. Процесс, в результате которого в несколько раз уменьшается размер файлов
+* сжатие информации
+* распаковка
+* разархивация
+* удаление информации`;
 
 export default function AdminQuestionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -32,6 +46,13 @@ export default function AdminQuestionsPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<QuestionForm>(emptyForm);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importText, setImportText] = useState("");
+  const [importReplace, setImportReplace] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importOk, setImportOk] = useState<string | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     adminApi
@@ -75,8 +96,74 @@ export default function AdminQuestionsPage() {
       id: q.id,
       text: q.text,
       position: q.position,
+      imageUrl: q.imageUrl ?? null,
       options: q.options.map((o) => ({ id: o.id, text: o.text, isCorrect: o.isCorrect })),
     });
+  }
+
+  async function onPickImage(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setErr("Файл слишком большой (макс. 5 МБ)");
+      e.target.value = "";
+      return;
+    }
+    setUploading(true);
+    setErr(null);
+    try {
+      const { url } = await adminApi.uploadImage(file);
+      setForm((f) => ({ ...f, imageUrl: url }));
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Не удалось загрузить картинку");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function clearImage() {
+    setForm((f) => ({ ...f, imageUrl: null }));
+  }
+
+  async function onImportFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setImportText(text);
+      setImportOk(null);
+    } catch {
+      setErr("Не удалось прочитать файл");
+    }
+    if (importFileRef.current) importFileRef.current.value = "";
+  }
+
+  async function onImportSubmit() {
+    if (!variantId) {
+      setErr("Сначала выберите вариант");
+      return;
+    }
+    if (!importText.trim()) {
+      setErr("Вставьте текст вопросов или загрузите файл");
+      return;
+    }
+    if (importReplace && !confirm("Удалить все текущие вопросы варианта и загрузить новые?")) {
+      return;
+    }
+    setImporting(true);
+    setErr(null);
+    setImportOk(null);
+    try {
+      const res = await adminApi.importQuestions(variantId, importText, importReplace);
+      setImportOk(`Импортировано вопросов: ${res.imported}`);
+      setImportText("");
+      await reloadQuestions();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Не удалось импортировать");
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function onDelete(id: string) {
@@ -118,6 +205,7 @@ export default function AdminQuestionsPage() {
           variantId,
           text: form.text.trim(),
           position: form.position,
+          imageUrl: form.imageUrl,
           options: form.options.map((o) => ({
             id: o.id,
             text: o.text.trim(),
@@ -128,6 +216,7 @@ export default function AdminQuestionsPage() {
         await adminApi.createQuestion({
           variantId,
           text: form.text.trim(),
+          imageUrl: form.imageUrl,
           options: form.options.map((o) => ({ text: o.text.trim(), isCorrect: o.isCorrect })),
         });
       }
@@ -167,6 +256,71 @@ export default function AdminQuestionsPage() {
 
       {variantId ? (
         <>
+          <div className="card space-y-4">
+            <h2 className="text-base font-medium">Импорт вопросов</h2>
+            <p className="text-sm text-neutral-600">
+              Вставьте текст или загрузите файл <code className="text-xs">.txt</code> /{" "}
+              <code className="text-xs">.json</code>. Вопросы добавятся к выбранному варианту.
+            </p>
+            <details className="text-sm text-neutral-600">
+              <summary className="cursor-pointer font-medium text-neutral-800">Формат текста</summary>
+              <pre className="mt-2 overflow-x-auto rounded-md bg-neutral-50 p-3 text-xs whitespace-pre-wrap">
+                {importExample}
+              </pre>
+              <ul className="mt-2 list-inside list-disc space-y-1 text-xs">
+                <li>
+                  Вопрос: <code>1.</code> или <code>1)</code> в начале строки
+                </li>
+                <li>
+                  Ответы: строки с <code>*</code> — все варианты переносятся; правильные отметьте
+                  вручную после импорта (кнопка «Изменить»)
+                </li>
+                <li>
+                  Опционально: <code>+ текст</code> — сразу правильный ответ при импорте
+                </li>
+                <li>Пустая строка между вопросами — необязательна</li>
+              </ul>
+            </details>
+            <textarea
+              className="input min-h-48 font-mono text-sm"
+              value={importText}
+              onChange={(e) => {
+                setImportText(e.target.value);
+                setImportOk(null);
+              }}
+              placeholder={importExample}
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".txt,.json,text/plain,application/json"
+                onChange={onImportFile}
+                className="text-sm file:mr-2 file:rounded-md file:border file:border-neutral-200 file:bg-white file:px-3 file:py-1.5 file:text-sm"
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-neutral-900"
+                  checked={importReplace}
+                  onChange={(e) => setImportReplace(e.target.checked)}
+                />
+                Заменить все вопросы варианта
+              </label>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={importing}
+                onClick={() => void onImportSubmit()}
+              >
+                {importing ? "Импорт..." : "Импортировать"}
+              </button>
+              {importOk ? <span className="text-sm text-emerald-700">{importOk}</span> : null}
+            </div>
+          </div>
+
           <form onSubmit={onSubmit} className="card space-y-4">
             <h2 className="text-base font-medium">
               {form.id ? "Редактировать вопрос" : "Новый вопрос"}
@@ -178,6 +332,37 @@ export default function AdminQuestionsPage() {
                 value={form.text}
                 onChange={(e) => setForm({ ...form, text: e.target.value })}
               />
+            </div>
+            <div>
+              <label className="label">Картинка (необязательно)</label>
+              {form.imageUrl ? (
+                <div className="flex items-start gap-3">
+                  <img
+                    src={resolveImageUrl(form.imageUrl) ?? ""}
+                    alt="Превью"
+                    className="max-h-48 rounded-md border border-neutral-200 bg-white object-contain"
+                  />
+                  <button type="button" className="btn-ghost text-red-600" onClick={clearImage}>
+                    Удалить картинку
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={onPickImage}
+                    disabled={uploading}
+                    className="text-sm file:mr-2 file:rounded-md file:border file:border-neutral-200 file:bg-white file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-neutral-50"
+                  />
+                  {uploading ? (
+                    <span className="text-xs text-neutral-500">Загрузка...</span>
+                  ) : (
+                    <span className="text-xs text-neutral-500">JPG, PNG или WebP, до 5 МБ</span>
+                  )}
+                </div>
+              )}
             </div>
             <div>
               <div className="mb-2 flex items-center justify-between">
@@ -280,6 +465,13 @@ export default function AdminQuestionsPage() {
                         </button>
                       </div>
                     </div>
+                    {q.imageUrl ? (
+                      <img
+                        src={resolveImageUrl(q.imageUrl) ?? ""}
+                        alt=""
+                        className="max-h-40 rounded-md border border-neutral-200 bg-white object-contain"
+                      />
+                    ) : null}
                     <ul className="space-y-1 text-sm">
                       {q.options.map((o) => (
                         <li key={o.id} className="flex items-center gap-2">

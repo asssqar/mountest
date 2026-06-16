@@ -31,6 +31,9 @@ services:
       # Один домен на всё → CORS не нужен
       CORS_ORIGIN: ""
       COOKIE_SECURE: "true"
+      UPLOAD_DIR: /data/images
+    volumes:
+      - mountest_uploads:/data/images
 
   caddy:
     build:
@@ -56,3 +59,4 @@ volumes:
   mountest_pgdata:
   mountest_caddy_data:
   mountest_caddy_config:
+  mountest_uploads:

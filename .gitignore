@@ -12,10 +12,15 @@ backend/tmp/
 backend/*.test
 backend/*.out
 
+# Локальный каталог загрузок (картинки вопросов в dev). В проде — named volume.
+backend/uploads/
+uploads/
+
 # Node
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/*.tsbuildinfo
 
 # IDE
 .idea/

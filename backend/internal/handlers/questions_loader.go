@@ -12,7 +12,7 @@ import (
 // иначе всегда false (для прохождения теста).
 func loadQuestionsWithOptions(ctx context.Context, pool *pgxpool.Pool, variantID uuid.UUID, includeCorrect bool) ([]questionOut, error) {
 	rows, err := pool.Query(ctx,
-		`SELECT id, position, text FROM questions
+		`SELECT id, position, text, image_url FROM questions
 		 WHERE variant_id=$1 ORDER BY position, created_at`,
 		variantID,
 	)
@@ -26,7 +26,7 @@ func loadQuestionsWithOptions(ctx context.Context, pool *pgxpool.Pool, variantID
 	for rows.Next() {
 		var q questionOut
 		q.VariantID = variantID
-		if err := rows.Scan(&q.ID, &q.Position, &q.Text); err != nil {
+		if err := rows.Scan(&q.ID, &q.Position, &q.Text, &q.ImageURL); err != nil {
 			return nil, err
 		}
 		q.Options = []optionOut{}
@@ -76,9 +76,9 @@ func loadQuestionsWithOptions(ctx context.Context, pool *pgxpool.Pool, variantID
 func loadQuestion(ctx context.Context, pool *pgxpool.Pool, questionID uuid.UUID, includeCorrect bool) (*questionOut, error) {
 	var q questionOut
 	if err := pool.QueryRow(ctx,
-		`SELECT id, variant_id, position, text FROM questions WHERE id=$1`,
+		`SELECT id, variant_id, position, text, image_url FROM questions WHERE id=$1`,
 		questionID,
-	).Scan(&q.ID, &q.VariantID, &q.Position, &q.Text); err != nil {
+	).Scan(&q.ID, &q.VariantID, &q.Position, &q.Text, &q.ImageURL); err != nil {
 		return nil, err
 	}
 	rows, err := pool.Query(ctx,

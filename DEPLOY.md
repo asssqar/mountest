@@ -153,6 +153,8 @@ docker compose -f docker-compose.prod.yml down -v
 
 ## Частые проблемы
 
+**Не загружается картинка к вопросу («Не удалось сохранить файл»)** — залейте актуальный код и на **сервере** (после `ssh`) выполните `docker compose -f docker-compose.prod.yml up -d --build`. В бэкенде: при `COOKIE_SECURE=true` каталог загрузок по умолчанию **`/data/images`** (даже если в `.env` забыли `UPLOAD_DIR`); при старте проверяется запись в этот каталог — если том не примонтирован или не writable, контейнер **не поднимется** с ошибкой в логах. В `docker-compose.prod.yml` у `backend` должны быть `UPLOAD_DIR: /data/images` и volume `mountest_uploads:/data/images`. Образ бэкенда — root внутри контейнера, чтобы не упираться в права на Docker volume. Диагностика: `docker compose -f docker-compose.prod.yml logs backend | tail -40` (строки `upload directory:`, `upload:`, `ensure upload dir`).
+
 **Caddy не выпускает сертификат** — проверьте, что:
 1. A-запись домена указывает на IP сервера: `dig +short mountest.example.com`.
 2. На VPS открыты порты 80 и 443 (`ufw status`).

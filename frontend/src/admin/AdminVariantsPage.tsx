@@ -2,12 +2,13 @@ import { FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { adminApi } from "./AdminApi";
 import { ApiError } from "../api/client";
-import type { Subject, Variant } from "../api/types";
+import type { AdminMe, Subject, Variant } from "../api/types";
 
 type FormState = {
   id: string | null;
   subjectId: string;
   title: string;
+  topic: string;
   durationMinutes: number;
 };
 
@@ -15,12 +16,14 @@ const emptyForm: FormState = {
   id: null,
   subjectId: "",
   title: "",
+  topic: "",
   durationMinutes: 60,
 };
 
 export default function AdminVariantsPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [me, setMe] = useState<AdminMe | null>(null);
   const [filter, setFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -29,12 +32,14 @@ export default function AdminVariantsPage() {
   async function reload() {
     setLoading(true);
     try {
-      const [s, v] = await Promise.all([
+      const [s, v, m] = await Promise.all([
         adminApi.listSubjects(),
         adminApi.listVariants(filter || undefined),
+        adminApi.me(),
       ]);
       setSubjects(s);
       setVariants(v);
+      setMe(m);
       if (!form.subjectId && s.length > 0) {
         setForm((f) => ({ ...f, subjectId: s[0].id }));
       }
@@ -61,12 +66,14 @@ export default function AdminVariantsPage() {
         await adminApi.updateVariant(form.id, {
           subjectId: form.subjectId,
           title: form.title.trim(),
+          topic: form.topic.trim(),
           durationMinutes: form.durationMinutes,
         });
       } else {
         await adminApi.createVariant({
           subjectId: form.subjectId,
           title: form.title.trim(),
+          topic: form.topic.trim(),
           durationMinutes: form.durationMinutes,
         });
       }
@@ -84,6 +91,18 @@ export default function AdminVariantsPage() {
       await reload();
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "Не удалось удалить");
+    }
+  }
+
+  async function onTogglePublish(v: Variant) {
+    const next = !v.isPublished;
+    // Оптимистично переключаем — если бэкенд откажет, откатим в catch.
+    setVariants((vs) => vs.map((x) => (x.id === v.id ? { ...x, isPublished: next } : x)));
+    try {
+      await adminApi.setVariantPublished(v.id, next);
+    } catch (e) {
+      setVariants((vs) => vs.map((x) => (x.id === v.id ? { ...x, isPublished: !next } : x)));
+      setErr(e instanceof ApiError ? e.message : "Не удалось изменить видимость");
     }
   }
 
@@ -105,13 +124,22 @@ export default function AdminVariantsPage() {
             ))}
           </select>
         </div>
-        <div className="md:col-span-2">
-          <label className="label">Название варианта</label>
+        <div>
+          <label className="label">Название теста</label>
           <input
             className="input"
             value={form.title}
             onChange={(e) => setForm({ ...form, title: e.target.value })}
-            placeholder="Напр., Демо-вариант №1"
+            placeholder="Напр., Теория №1"
+          />
+        </div>
+        <div>
+          <label className="label">Тема (необязательно)</label>
+          <input
+            className="input"
+            value={form.topic}
+            onChange={(e) => setForm({ ...form, topic: e.target.value })}
+            placeholder="Напр., Файловые системы"
           />
         </div>
         <div>
@@ -168,15 +196,31 @@ export default function AdminVariantsPage() {
         <ul className="space-y-2">
           {variants.map((v) => {
             const subj = subjects.find((s) => s.id === v.subjectId);
+            const published = v.isPublished !== false;
             return (
               <li key={v.id} className="card flex items-center justify-between gap-3">
-                <div>
-                  <p className="font-medium">{v.title}</p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium">{v.title}</p>
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                        published
+                          ? "bg-emerald-100 text-emerald-800"
+                          : "bg-neutral-200 text-neutral-700"
+                      }`}
+                    >
+                      {published ? "опубликован" : "скрыт"}
+                    </span>
+                  </div>
                   <p className="text-xs text-neutral-500">
+                    {v.topic ? `${v.topic} · ` : ""}
                     {subj?.name ?? "—"} · {v.questionsCount} вопросов · {v.durationMinutes} мин
+                    {me?.role === "superadmin" && v.createdByUsername
+                      ? ` · автор: ${v.createdByUsername}`
+                      : null}
                   </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
                   <Link
                     className="btn-secondary"
                     to={`/admin/questions?variantId=${v.id}`}
@@ -185,11 +229,23 @@ export default function AdminVariantsPage() {
                   </Link>
                   <button
                     className="btn-secondary"
+                    onClick={() => void onTogglePublish(v)}
+                    title={
+                      published
+                        ? "Скрыть из публичного каталога"
+                        : "Показать в публичном каталоге"
+                    }
+                  >
+                    {published ? "Скрыть" : "Опубликовать"}
+                  </button>
+                  <button
+                    className="btn-secondary"
                     onClick={() =>
                       setForm({
                         id: v.id,
                         subjectId: v.subjectId,
                         title: v.title,
+                        topic: v.topic ?? "",
                         durationMinutes: v.durationMinutes,
                       })
                     }

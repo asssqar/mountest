@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strconv"
@@ -111,39 +112,46 @@ func currentAdminUUID(ctx context.Context) uuid.UUID {
 }
 
 // ensureVariantAccess: суперадмин — всегда ОК; editor — только если он владелец.
-// Возвращает (httpStatus, errMsg). 0 — доступ разрешён.
-func (h *AdminHandler) ensureVariantAccess(ctx context.Context, variantID uuid.UUID) (int, string) {
+// Возвращает true, если доступ разрешён. Если false — ответ клиенту уже записан.
+func (h *AdminHandler) ensureVariantAccess(w http.ResponseWriter, r *http.Request, variantID uuid.UUID) bool {
+	ctx := r.Context()
 	if auth.IsSuperadmin(ctx) {
-		return 0, ""
+		return true
 	}
 	adminID := currentAdminUUID(ctx)
 	if adminID == uuid.Nil {
-		return http.StatusUnauthorized, "unauthorized"
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return false
 	}
 	var owner *uuid.UUID
 	err := h.Pool.QueryRow(ctx,
 		`SELECT created_by FROM variants WHERE id=$1`, variantID,
 	).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return http.StatusNotFound, "Вариант не найден"
+		httpx.WriteError(w, http.StatusNotFound, "Вариант не найден")
+		return false
 	}
 	if err != nil {
-		return http.StatusInternalServerError, err.Error()
+		httpx.WriteInternalError(w, r, err)
+		return false
 	}
 	if owner == nil || *owner != adminID {
-		return http.StatusForbidden, "Нет доступа к этому варианту"
+		httpx.WriteError(w, http.StatusForbidden, "Нет доступа к этому варианту")
+		return false
 	}
-	return 0, ""
+	return true
 }
 
 // ensureQuestionAccess — то же, но через JOIN questions→variants.
-func (h *AdminHandler) ensureQuestionAccess(ctx context.Context, questionID uuid.UUID) (int, string) {
+func (h *AdminHandler) ensureQuestionAccess(w http.ResponseWriter, r *http.Request, questionID uuid.UUID) bool {
+	ctx := r.Context()
 	if auth.IsSuperadmin(ctx) {
-		return 0, ""
+		return true
 	}
 	adminID := currentAdminUUID(ctx)
 	if adminID == uuid.Nil {
-		return http.StatusUnauthorized, "unauthorized"
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return false
 	}
 	var owner *uuid.UUID
 	err := h.Pool.QueryRow(ctx,
@@ -152,15 +160,18 @@ func (h *AdminHandler) ensureQuestionAccess(ctx context.Context, questionID uuid
 		 WHERE q.id=$1`, questionID,
 	).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return http.StatusNotFound, "Вопрос не найден"
+		httpx.WriteError(w, http.StatusNotFound, "Вопрос не найден")
+		return false
 	}
 	if err != nil {
-		return http.StatusInternalServerError, err.Error()
+		httpx.WriteInternalError(w, r, err)
+		return false
 	}
 	if owner == nil || *owner != adminID {
-		return http.StatusForbidden, "Нет доступа к этому вопросу"
+		httpx.WriteError(w, http.StatusForbidden, "Нет доступа к этому вопросу")
+		return false
 	}
-	return 0, ""
+	return true
 }
 
 // ---- subjects ----
@@ -175,7 +186,7 @@ func (h *AdminHandler) ListSubjects(w http.ResponseWriter, r *http.Request) {
 		        (SELECT COUNT(*) FROM variants v WHERE v.subject_id = s.id) AS variants_count
 		 FROM subjects s ORDER BY s.name`)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -188,7 +199,7 @@ func (h *AdminHandler) ListSubjects(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var it item
 		if err := rows.Scan(&it.ID, &it.Name, &it.VariantsCount); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		out = append(out, it)
@@ -208,7 +219,7 @@ func (h *AdminHandler) CreateSubject(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(req.Name),
 	).Scan(&id)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": id, "name": req.Name})
@@ -230,7 +241,7 @@ func (h *AdminHandler) UpdateSubject(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(req.Name), id,
 	)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -247,7 +258,7 @@ func (h *AdminHandler) DeleteSubject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM subjects WHERE id=$1`, id); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -258,13 +269,24 @@ func (h *AdminHandler) DeleteSubject(w http.ResponseWriter, r *http.Request) {
 type variantReq struct {
 	SubjectID       uuid.UUID `json:"subjectId"`
 	Title           string    `json:"title"`
+	Topic           string    `json:"topic"`
 	DurationMinutes int       `json:"durationMinutes"`
 }
 
+func normalizeTopic(s string) *string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 func (h *AdminHandler) ListVariants(w http.ResponseWriter, r *http.Request) {
-	q := `SELECT v.id, v.subject_id, v.title, v.duration_minutes, v.created_by,
-	             (SELECT COUNT(*) FROM questions qq WHERE qq.variant_id = v.id) AS questions_count
-	      FROM variants v`
+	q := `SELECT v.id, v.subject_id, v.title, v.topic, v.duration_minutes, v.is_published,
+	             (SELECT COUNT(*) FROM questions qq WHERE qq.variant_id = v.id) AS questions_count,
+	             cr.username AS created_by_username
+	      FROM variants v
+	      LEFT JOIN admins cr ON cr.id = v.created_by`
 	args := []any{}
 	conds := []string{}
 
@@ -296,24 +318,34 @@ func (h *AdminHandler) ListVariants(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.Pool.Query(r.Context(), q, args...)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
 	type item struct {
-		ID              uuid.UUID  `json:"id"`
-		SubjectID       uuid.UUID  `json:"subjectId"`
-		Title           string     `json:"title"`
-		DurationMinutes int        `json:"durationMinutes"`
-		QuestionsCount  int        `json:"questionsCount"`
-		CreatedBy       *uuid.UUID `json:"createdBy,omitempty"`
+		ID                uuid.UUID `json:"id"`
+		SubjectID         uuid.UUID `json:"subjectId"`
+		Title             string    `json:"title"`
+		Topic             *string   `json:"topic,omitempty"`
+		DurationMinutes   int       `json:"durationMinutes"`
+		IsPublished       bool      `json:"isPublished"`
+		QuestionsCount    int       `json:"questionsCount"`
+		CreatedByUsername *string   `json:"createdByUsername,omitempty"` // только superadmin
 	}
+	isSuper := auth.IsSuperadmin(r.Context())
 	out := []item{}
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.ID, &it.SubjectID, &it.Title, &it.DurationMinutes, &it.CreatedBy, &it.QuestionsCount); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		var creatorName sql.NullString
+		if err := rows.Scan(&it.ID, &it.SubjectID, &it.Title, &it.Topic, &it.DurationMinutes, &it.IsPublished, &it.QuestionsCount, &creatorName); err != nil {
+			httpx.WriteInternalError(w, r, err)
 			return
+		}
+		if isSuper && creatorName.Valid {
+			s := strings.TrimSpace(creatorName.String)
+			if s != "" {
+				it.CreatedByUsername = &s
+			}
 		}
 		out = append(out, it)
 	}
@@ -323,7 +355,7 @@ func (h *AdminHandler) ListVariants(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) CreateVariant(w http.ResponseWriter, r *http.Request) {
 	var req variantReq
 	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, "Некорректный запрос")
 		return
 	}
 	if strings.TrimSpace(req.Title) == "" || req.SubjectID == uuid.Nil {
@@ -340,12 +372,12 @@ func (h *AdminHandler) CreateVariant(w http.ResponseWriter, r *http.Request) {
 	}
 	var id uuid.UUID
 	err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO variants (subject_id, title, duration_minutes, created_by)
-		 VALUES ($1, $2, $3, $4) RETURNING id`,
-		req.SubjectID, strings.TrimSpace(req.Title), req.DurationMinutes, adminID,
+		`INSERT INTO variants (subject_id, title, topic, duration_minutes, created_by)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		req.SubjectID, strings.TrimSpace(req.Title), normalizeTopic(req.Topic), req.DurationMinutes, adminID,
 	).Scan(&id)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -357,13 +389,12 @@ func (h *AdminHandler) UpdateVariant(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	if status, msg := h.ensureVariantAccess(r.Context(), id); status != 0 {
-		httpx.WriteError(w, status, msg)
+	if !h.ensureVariantAccess(w, r, id) {
 		return
 	}
 	var req variantReq
 	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, "Некорректный запрос")
 		return
 	}
 	if strings.TrimSpace(req.Title) == "" || req.SubjectID == uuid.Nil {
@@ -374,11 +405,11 @@ func (h *AdminHandler) UpdateVariant(w http.ResponseWriter, r *http.Request) {
 		req.DurationMinutes = 60
 	}
 	tag, err := h.Pool.Exec(r.Context(),
-		`UPDATE variants SET subject_id=$1, title=$2, duration_minutes=$3 WHERE id=$4`,
-		req.SubjectID, strings.TrimSpace(req.Title), req.DurationMinutes, id,
+		`UPDATE variants SET subject_id=$1, title=$2, topic=$3, duration_minutes=$4 WHERE id=$5`,
+		req.SubjectID, strings.TrimSpace(req.Title), normalizeTopic(req.Topic), req.DurationMinutes, id,
 	)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -394,15 +425,53 @@ func (h *AdminHandler) DeleteVariant(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	if status, msg := h.ensureVariantAccess(r.Context(), id); status != 0 {
-		httpx.WriteError(w, status, msg)
+	if !h.ensureVariantAccess(w, r, id) {
 		return
 	}
 	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM variants WHERE id=$1`, id); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type setPublishedReq struct {
+	IsPublished bool `json:"isPublished"`
+}
+
+// SetVariantPublished — POST /admin/variants/{id}/publish.
+// Тоггл видимости варианта в публичном каталоге.
+// Editor может управлять только своими вариантами; superadmin — любыми.
+func (h *AdminHandler) SetVariantPublished(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseUUID(chi.URLParam(r, "id"))
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if !h.ensureVariantAccess(w, r, id) {
+		return
+	}
+	var req setPublishedReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "Некорректный запрос")
+		return
+	}
+	tag, err := h.Pool.Exec(r.Context(),
+		`UPDATE variants SET is_published=$1 WHERE id=$2`,
+		req.IsPublished, id,
+	)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"id":          id,
+		"isPublished": req.IsPublished,
+	})
 }
 
 // ---- questions (вместе с опциями для редактора) ----
@@ -417,6 +486,7 @@ type questionReq struct {
 	VariantID uuid.UUID     `json:"variantId"`
 	Position  int           `json:"position"`
 	Text      string        `json:"text"`
+	ImageURL  *string       `json:"imageUrl"`
 	Options   []optionInput `json:"options"`
 }
 
@@ -432,7 +502,24 @@ type questionOut struct {
 	VariantID uuid.UUID   `json:"variantId"`
 	Position  int         `json:"position"`
 	Text      string      `json:"text"`
+	ImageURL  *string     `json:"imageUrl,omitempty"`
 	Options   []optionOut `json:"options"`
+}
+
+// normalizeImageURL: пустую строку трактуем как «убрать картинку».
+// Принимаем только наши собственные пути /api/uploads/<file> — это страхует от XSS/SSRF.
+func normalizeImageURL(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*in)
+	if s == "" {
+		return nil
+	}
+	if !strings.HasPrefix(s, "/api/uploads/") {
+		return nil
+	}
+	return &s
 }
 
 func (h *AdminHandler) ListQuestions(w http.ResponseWriter, r *http.Request) {
@@ -446,13 +533,12 @@ func (h *AdminHandler) ListQuestions(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad variantId")
 		return
 	}
-	if status, msg := h.ensureVariantAccess(r.Context(), vid); status != 0 {
-		httpx.WriteError(w, status, msg)
+	if !h.ensureVariantAccess(w, r, vid) {
 		return
 	}
 	out, err := loadQuestionsWithOptions(r.Context(), h.Pool, vid, true)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
@@ -464,8 +550,7 @@ func (h *AdminHandler) GetQuestion(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	if status, msg := h.ensureQuestionAccess(r.Context(), id); status != 0 {
-		httpx.WriteError(w, status, msg)
+	if !h.ensureQuestionAccess(w, r, id) {
 		return
 	}
 	q, err := loadQuestion(r.Context(), h.Pool, id, true)
@@ -474,7 +559,7 @@ func (h *AdminHandler) GetQuestion(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusNotFound, "not found")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, q)
@@ -483,15 +568,14 @@ func (h *AdminHandler) GetQuestion(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) CreateQuestion(w http.ResponseWriter, r *http.Request) {
 	var req questionReq
 	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, "Некорректный запрос")
 		return
 	}
 	if req.VariantID == uuid.Nil || strings.TrimSpace(req.Text) == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "Укажите вариант и текст вопроса")
 		return
 	}
-	if status, msg := h.ensureVariantAccess(r.Context(), req.VariantID); status != 0 {
-		httpx.WriteError(w, status, msg)
+	if !h.ensureVariantAccess(w, r, req.VariantID) {
 		return
 	}
 	if len(req.Options) < 2 {
@@ -515,7 +599,7 @@ func (h *AdminHandler) CreateQuestion(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.Pool.Begin(r.Context())
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -526,7 +610,7 @@ func (h *AdminHandler) CreateQuestion(w http.ResponseWriter, r *http.Request) {
 			`SELECT COALESCE(MAX(position), 0) FROM questions WHERE variant_id=$1`,
 			req.VariantID,
 		).Scan(&maxPos); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		req.Position = maxPos + 1
@@ -534,11 +618,11 @@ func (h *AdminHandler) CreateQuestion(w http.ResponseWriter, r *http.Request) {
 
 	var qid uuid.UUID
 	if err := tx.QueryRow(r.Context(),
-		`INSERT INTO questions (variant_id, position, text)
-		 VALUES ($1, $2, $3) RETURNING id`,
-		req.VariantID, req.Position, strings.TrimSpace(req.Text),
+		`INSERT INTO questions (variant_id, position, text, image_url)
+		 VALUES ($1, $2, $3, $4) RETURNING id`,
+		req.VariantID, req.Position, strings.TrimSpace(req.Text), normalizeImageURL(req.ImageURL),
 	).Scan(&qid); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	for i, o := range req.Options {
@@ -547,12 +631,12 @@ func (h *AdminHandler) CreateQuestion(w http.ResponseWriter, r *http.Request) {
 			 VALUES ($1, $2, $3, $4)`,
 			qid, i+1, strings.TrimSpace(o.Text), o.IsCorrect,
 		); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": qid})
@@ -564,13 +648,12 @@ func (h *AdminHandler) UpdateQuestion(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	if status, msg := h.ensureQuestionAccess(r.Context(), id); status != 0 {
-		httpx.WriteError(w, status, msg)
+	if !h.ensureQuestionAccess(w, r, id) {
 		return
 	}
 	var req questionReq
 	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, "Некорректный запрос")
 		return
 	}
 	if strings.TrimSpace(req.Text) == "" {
@@ -598,17 +681,17 @@ func (h *AdminHandler) UpdateQuestion(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.Pool.Begin(r.Context())
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 
 	tag, err := tx.Exec(r.Context(),
-		`UPDATE questions SET position=$1, text=$2 WHERE id=$3`,
-		req.Position, strings.TrimSpace(req.Text), id,
+		`UPDATE questions SET position=$1, text=$2, image_url=$3 WHERE id=$4`,
+		req.Position, strings.TrimSpace(req.Text), normalizeImageURL(req.ImageURL), id,
 	)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -618,7 +701,7 @@ func (h *AdminHandler) UpdateQuestion(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.Exec(r.Context(),
 		`DELETE FROM answer_options WHERE question_id=$1`, id,
 	); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	for i, o := range req.Options {
@@ -627,12 +710,12 @@ func (h *AdminHandler) UpdateQuestion(w http.ResponseWriter, r *http.Request) {
 			 VALUES ($1, $2, $3, $4)`,
 			id, i+1, strings.TrimSpace(o.Text), o.IsCorrect,
 		); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": id})
@@ -644,12 +727,11 @@ func (h *AdminHandler) DeleteQuestion(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	if status, msg := h.ensureQuestionAccess(r.Context(), id); status != 0 {
-		httpx.WriteError(w, status, msg)
+	if !h.ensureQuestionAccess(w, r, id) {
 		return
 	}
 	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM questions WHERE id=$1`, id); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

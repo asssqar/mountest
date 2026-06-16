@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -15,9 +16,23 @@ type Config struct {
 	SeedDemo      bool
 	CORSOrigin    string
 	CookieSecure  bool
+	UploadDir     string
 }
 
 func Load() Config {
+	cookieSecure := getbool("COOKIE_SECURE", false)
+	uploadDir := os.Getenv("UPLOAD_DIR")
+	if uploadDir == "" {
+		if cookieSecure {
+			// В проде (CookieSecure) том обычно монтируют в /data/images; относительный ./uploads
+			// в distroless часто оказывается на read-only слое и os.Create падает.
+			uploadDir = "/data/images"
+		} else {
+			uploadDir = "./uploads"
+		}
+	}
+	uploadDir = filepath.Clean(uploadDir)
+
 	cfg := Config{
 		AppPort:       getenv("APP_PORT", "8080"),
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
@@ -26,7 +41,8 @@ func Load() Config {
 		AdminPassword: getenv("ADMIN_PASSWORD", "admin123"),
 		SeedDemo:      getbool("SEED_DEMO", true),
 		CORSOrigin:    getenv("CORS_ORIGIN", "http://localhost:5173"),
-		CookieSecure:  getbool("COOKIE_SECURE", false),
+		CookieSecure:  cookieSecure,
+		UploadDir:     uploadDir,
 	}
 	if cfg.DatabaseURL == "" {
 		cfg.DatabaseURL = fmt.Sprintf(

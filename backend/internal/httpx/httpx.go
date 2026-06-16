@@ -3,9 +3,12 @@ package httpx
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func WriteJSON(w http.ResponseWriter, status int, v any) {
@@ -19,6 +22,18 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 
 func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
+}
+
+// WriteInternalError логирует полную ошибку с request_id и возвращает клиенту
+// безопасное сообщение + requestId, чтобы пользователь мог его указать в баг-репорте.
+// НИКОГДА не отдаёт err.Error() наружу — там часто торчат имена таблиц/колонок Postgres.
+func WriteInternalError(w http.ResponseWriter, r *http.Request, err error) {
+	reqID := middleware.GetReqID(r.Context())
+	log.Printf("[req=%s] internal error: %v", reqID, err)
+	WriteJSON(w, http.StatusInternalServerError, map[string]string{
+		"error":     "Внутренняя ошибка сервера",
+		"requestId": reqID,
+	})
 }
 
 func DecodeJSON(r *http.Request, v any) error {
@@ -36,4 +51,11 @@ func ParseUUID(s string) (uuid.UUID, bool) {
 		return uuid.Nil, false
 	}
 	return id, true
+}
+
+// IsUniqueViolation — типизированный детект unique_violation вместо хрупкого
+// strings.Contains(err.Error(), "23505").
+func IsUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

@@ -25,13 +25,27 @@ export const adminApi = {
     const q = subjectId ? `?subjectId=${subjectId}` : "";
     return api.get<Variant[]>(`/admin/variants${q}`);
   },
-  createVariant: (input: { subjectId: string; title: string; durationMinutes: number }) =>
-    api.post<{ id: string }>("/admin/variants", input),
+  createVariant: (input: {
+    subjectId: string;
+    title: string;
+    topic?: string;
+    durationMinutes: number;
+  }) => api.post<{ id: string }>("/admin/variants", input),
   updateVariant: (
     id: string,
-    input: { subjectId: string; title: string; durationMinutes: number },
+    input: { subjectId: string; title: string; topic?: string; durationMinutes: number },
   ) => api.put<{ id: string }>(`/admin/variants/${id}`, input),
   deleteVariant: (id: string) => api.delete<void>(`/admin/variants/${id}`),
+  setVariantPublished: (id: string, isPublished: boolean) =>
+    api.post<{ id: string; isPublished: boolean }>(
+      `/admin/variants/${id}/publish`,
+      { isPublished },
+    ),
+  importQuestions: (variantId: string, text: string, replace = false) =>
+    api.post<{ imported: number }>(`/admin/variants/${variantId}/import-questions`, {
+      text,
+      replace,
+    }),
 
   listQuestions: (variantId: string) =>
     api.get<Question[]>(`/admin/questions?variantId=${variantId}`),
@@ -40,6 +54,7 @@ export const adminApi = {
     variantId: string;
     text: string;
     position?: number;
+    imageUrl?: string | null;
     options: { text: string; isCorrect: boolean }[];
   }) => api.post<{ id: string }>("/admin/questions", input),
   updateQuestion: (
@@ -48,10 +63,13 @@ export const adminApi = {
       variantId: string;
       text: string;
       position: number;
+      imageUrl?: string | null;
       options: { id?: string; text: string; isCorrect: boolean }[];
     },
   ) => api.put<{ id: string }>(`/admin/questions/${id}`, input),
   deleteQuestion: (id: string) => api.delete<void>(`/admin/questions/${id}`),
+
+  uploadImage: (file: File) => api.upload<{ url: string }>("/admin/upload", file),
 
   // ---- users (только superadmin) ----
   listUsers: () => api.get<AdminUser[]>("/admin/users"),

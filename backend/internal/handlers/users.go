@@ -37,7 +37,7 @@ func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		`SELECT id, username, role, created_at FROM admins ORDER BY role DESC, created_at`,
 	)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -45,7 +45,7 @@ func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u adminUserOut
 		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		out = append(out, u)
@@ -82,12 +82,11 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		email, string(hash), auth.RoleEditor,
 	).Scan(&id)
 	if err != nil {
-		// 23505 — unique_violation на username
-		if strings.Contains(err.Error(), "23505") || strings.Contains(strings.ToLower(err.Error()), "unique") {
+		if httpx.IsUniqueViolation(err) {
 			httpx.WriteError(w, http.StatusConflict, "Пользователь с таким email уже существует")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 
@@ -113,7 +112,7 @@ func (h *UsersHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusNotFound, "Пользователь не найден")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if role == auth.RoleSuperadmin {
@@ -130,7 +129,7 @@ func (h *UsersHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE admins SET password_hash=$1 WHERE id=$2`, string(hash), id,
 	); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -160,7 +159,7 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusNotFound, "Пользователь не найден")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if role == auth.RoleSuperadmin {
@@ -170,7 +169,7 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	// ON DELETE SET NULL на variants.created_by — данные остаются, владелец обнуляется.
 	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM admins WHERE id=$1`, id); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

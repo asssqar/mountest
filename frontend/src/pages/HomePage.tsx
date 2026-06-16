@@ -105,7 +105,9 @@ export default function HomePage() {
         {loading ? (
           <p className="text-neutral-500">Загрузка...</p>
         ) : subjects.length === 0 ? (
-          <p className="text-neutral-500">Пока нет предметов.</p>
+          <p className="text-neutral-500">
+            Пока нет доступных предметов — как только появятся варианты, они отобразятся здесь.
+          </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
             {subjects.map((s) => (

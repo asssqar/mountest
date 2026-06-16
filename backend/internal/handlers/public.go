@@ -17,6 +17,9 @@ import (
 
 type PublicHandler struct {
 	Pool *pgxpool.Pool
+	// AttemptSecret подписывает токены попытки. Выводится из JWT_SECRET в main.go
+	// через DeriveAttemptSecret — отдельной переменной окружения не нужно.
+	AttemptSecret []byte
 }
 
 // ---- guest sessions ----
@@ -44,7 +47,7 @@ func (h *PublicHandler) CreateGuest(w http.ResponseWriter, r *http.Request) {
 		 VALUES ($1, $2) RETURNING id`,
 		first, last,
 	).Scan(&id); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
@@ -77,12 +80,15 @@ func (h *PublicHandler) GetGuest(w http.ResponseWriter, r *http.Request) {
 // ---- subjects / variants (public, без is_correct) ----
 
 func (h *PublicHandler) ListSubjects(w http.ResponseWriter, r *http.Request) {
+	// Ученикам показываем только предметы, у которых есть хотя бы один ОПУБЛИКОВАННЫЙ вариант.
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT s.id, s.name,
-		        (SELECT COUNT(*) FROM variants v WHERE v.subject_id = s.id) AS variants_count
-		 FROM subjects s ORDER BY s.name`)
+		        (SELECT COUNT(*) FROM variants v WHERE v.subject_id = s.id AND v.is_published) AS variants_count
+		 FROM subjects s
+		 WHERE EXISTS (SELECT 1 FROM variants v WHERE v.subject_id = s.id AND v.is_published)
+		 ORDER BY s.name`)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -95,7 +101,7 @@ func (h *PublicHandler) ListSubjects(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var it item
 		if err := rows.Scan(&it.ID, &it.Name, &it.VariantsCount); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		out = append(out, it)
@@ -110,27 +116,29 @@ func (h *PublicHandler) ListSubjectVariants(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT v.id, v.title, v.duration_minutes,
+		`SELECT v.id, v.title, v.topic, v.duration_minutes,
 		        (SELECT COUNT(*) FROM questions q WHERE q.variant_id = v.id) AS questions_count
-		 FROM variants v WHERE v.subject_id=$1 ORDER BY v.title`,
+		 FROM variants v WHERE v.subject_id=$1 AND v.is_published
+		 ORDER BY v.title`,
 		subjID,
 	)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
 	type item struct {
 		ID              uuid.UUID `json:"id"`
 		Title           string    `json:"title"`
+		Topic           *string   `json:"topic,omitempty"`
 		DurationMinutes int       `json:"durationMinutes"`
 		QuestionsCount  int       `json:"questionsCount"`
 	}
 	out := []item{}
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.ID, &it.Title, &it.DurationMinutes, &it.QuestionsCount); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		if err := rows.Scan(&it.ID, &it.Title, &it.Topic, &it.DurationMinutes, &it.QuestionsCount); err != nil {
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		out = append(out, it)
@@ -146,16 +154,19 @@ type startAttemptReq struct {
 }
 
 type attemptOut struct {
-	ID              uuid.UUID            `json:"id"`
-	VariantID       uuid.UUID            `json:"variantId"`
-	VariantTitle    string               `json:"variantTitle"`
-	SubjectName     string               `json:"subjectName"`
-	DurationMinutes int                  `json:"durationMinutes"`
-	StartedAt       time.Time            `json:"startedAt"`
-	FinishedAt      *time.Time           `json:"finishedAt,omitempty"`
-	Questions       []questionOut        `json:"questions"`
-	Answers         map[string][]string  `json:"answers"`
-	Guest           *guestPublic         `json:"guest,omitempty"`
+	ID              uuid.UUID           `json:"id"`
+	VariantID       uuid.UUID           `json:"variantId"`
+	VariantTitle    string              `json:"variantTitle"`
+	SubjectName     string              `json:"subjectName"`
+	DurationMinutes int                 `json:"durationMinutes"`
+	StartedAt       time.Time           `json:"startedAt"`
+	FinishedAt      *time.Time          `json:"finishedAt,omitempty"`
+	Questions       []questionOut       `json:"questions"`
+	Answers         map[string][]string `json:"answers"`
+	Guest           *guestPublic        `json:"guest,omitempty"`
+	// AttemptToken возвращается ТОЛЬКО при создании попытки. На всех остальных
+	// ручках клиент сам передаёт его в заголовке X-Attempt-Token.
+	AttemptToken string `json:"attemptToken,omitempty"`
 }
 
 type guestPublic struct {
@@ -167,7 +178,7 @@ type guestPublic struct {
 func (h *PublicHandler) StartAttempt(w http.ResponseWriter, r *http.Request) {
 	var req startAttemptReq
 	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, "Некорректный запрос")
 		return
 	}
 	if req.VariantID == uuid.Nil || req.GuestSessionID == uuid.Nil {
@@ -183,10 +194,11 @@ func (h *PublicHandler) StartAttempt(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "Гостевая сессия не найдена")
 		return
 	}
+	// Опубликован И существует — иначе ученик мог бы стартовать по прямой ссылке скрытый вариант.
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM variants WHERE id=$1)`, req.VariantID,
+		`SELECT EXISTS(SELECT 1 FROM variants WHERE id=$1 AND is_published)`, req.VariantID,
 	).Scan(&ok); err != nil || !ok {
-		httpx.WriteError(w, http.StatusBadRequest, "Вариант не найден")
+		httpx.WriteError(w, http.StatusBadRequest, "Вариант недоступен")
 		return
 	}
 
@@ -195,14 +207,16 @@ func (h *PublicHandler) StartAttempt(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO attempts (guest_session_id, variant_id) VALUES ($1, $2) RETURNING id`,
 		req.GuestSessionID, req.VariantID,
 	).Scan(&id); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	out, err := h.loadAttempt(r.Context(), id, false)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
+	// Токен выдаётся ТОЛЬКО при создании попытки. Дальше клиент шлёт его в X-Attempt-Token.
+	out.AttemptToken = attemptToken(h.AttemptSecret, id)
 	httpx.WriteJSON(w, http.StatusCreated, out)
 }
 
@@ -212,13 +226,16 @@ func (h *PublicHandler) GetAttempt(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
+	if !h.requireAttemptAuth(w, r, id) {
+		return
+	}
 	out, err := h.loadAttempt(r.Context(), id, false)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			httpx.WriteError(w, http.StatusNotFound, "not found")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
@@ -235,9 +252,12 @@ func (h *PublicHandler) SaveAnswer(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
+	if !h.requireAttemptAuth(w, r, id) {
+		return
+	}
 	var req saveAnswerReq
 	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, "Некорректный запрос")
 		return
 	}
 	if req.QuestionID == uuid.Nil {
@@ -267,28 +287,34 @@ func (h *PublicHandler) SaveAnswer(w http.ResponseWriter, r *http.Request) {
 		 DO UPDATE SET selected_option_ids=EXCLUDED.selected_option_ids, updated_at=now()`,
 		id, req.QuestionID, req.SelectedOptionIDs,
 	); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type errorEntry struct {
+// reviewEntry — один вопрос на экране результата. Возвращается всегда, по всем
+// вопросам варианта, не только по ошибкам. Status позволяет фронту красить и фильтровать.
+type reviewEntry struct {
 	QuestionID        uuid.UUID   `json:"questionId"`
+	Position          int         `json:"position"`
 	QuestionText      string      `json:"questionText"`
+	QuestionImageURL  *string     `json:"questionImageUrl,omitempty"`
 	Options           []optionOut `json:"options"`
 	SelectedOptionIDs []uuid.UUID `json:"selectedOptionIds"`
 	CorrectOptionIDs  []uuid.UUID `json:"correctOptionIds"`
+	// Status: "correct" | "incorrect" | "unanswered".
+	Status string `json:"status"`
 }
 
 type resultOut struct {
-	AttemptID  uuid.UUID    `json:"attemptId"`
-	Score      int          `json:"score"`
-	Total      int          `json:"total"`
-	StartedAt  time.Time    `json:"startedAt"`
-	FinishedAt time.Time    `json:"finishedAt"`
-	Errors     []errorEntry `json:"errors"`
-	Guest      *guestPublic `json:"guest,omitempty"`
+	AttemptID  uuid.UUID     `json:"attemptId"`
+	Score      int           `json:"score"`
+	Total      int           `json:"total"`
+	StartedAt  time.Time     `json:"startedAt"`
+	FinishedAt time.Time     `json:"finishedAt"`
+	Review     []reviewEntry `json:"review"`
+	Guest      *guestPublic  `json:"guest,omitempty"`
 }
 
 // FinishAttempt считает результат, фиксирует попытку и возвращает экран результата.
@@ -298,10 +324,13 @@ func (h *PublicHandler) FinishAttempt(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
 		return
 	}
+	if !h.requireAttemptAuth(w, r, id) {
+		return
+	}
 
 	tx, err := h.Pool.Begin(r.Context())
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -320,9 +349,9 @@ func (h *PublicHandler) FinishAttempt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	score, total, errs, err := computeAttemptResult(r.Context(), tx, id, variantID)
+	score, total, review, err := computeAttemptReview(r.Context(), tx, id, variantID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 
@@ -332,7 +361,7 @@ func (h *PublicHandler) FinishAttempt(w http.ResponseWriter, r *http.Request) {
 			`UPDATE attempts SET finished_at=$1, score=$2, total=$3 WHERE id=$4`,
 			now, score, total, id,
 		); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		finished = &now
@@ -344,7 +373,7 @@ func (h *PublicHandler) FinishAttempt(w http.ResponseWriter, r *http.Request) {
 	).Scan(&first, &last)
 
 	if err := tx.Commit(r.Context()); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 
@@ -354,7 +383,7 @@ func (h *PublicHandler) FinishAttempt(w http.ResponseWriter, r *http.Request) {
 		Total:      total,
 		StartedAt:  started,
 		FinishedAt: *finished,
-		Errors:     errs,
+		Review:     review,
 		Guest:      &guestPublic{ID: guestID, FirstName: first, LastName: last},
 	})
 }
@@ -363,6 +392,9 @@ func (h *PublicHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 	id, ok := httpx.ParseUUID(chi.URLParam(r, "id"))
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if !h.requireAttemptAuth(w, r, id) {
 		return
 	}
 	var (
@@ -384,9 +416,9 @@ func (h *PublicHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "Попытка ещё не завершена")
 		return
 	}
-	_, _, errs, err := computeAttemptResult(r.Context(), h.Pool, id, variantID)
+	_, _, review, err := computeAttemptReview(r.Context(), h.Pool, id, variantID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	var first, last string
@@ -398,7 +430,7 @@ func (h *PublicHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 		AttemptID:  id,
 		StartedAt:  started,
 		FinishedAt: *finished,
-		Errors:     errs,
+		Review:     review,
 		Guest:      &guestPublic{ID: guestID, FirstName: first, LastName: last},
 	}
 	if score != nil {

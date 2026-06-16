@@ -71,6 +71,9 @@ func (s *Service) Parse(tokenStr string) (*Claims, error) {
 	return claims, nil
 }
 
+// SameSite=Strict выбран сознательно: это закрывает все CSRF-векторы для админ-cookie.
+// UX-цена: переход на /admin по ссылке из email/мессенджера НЕ принесёт cookie,
+// и админа перекинет на /admin/login — это допустимо для внутреннего инструмента.
 func (s *Service) SetCookie(w http.ResponseWriter, value string, exp time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -79,7 +82,7 @@ func (s *Service) SetCookie(w http.ResponseWriter, value string, exp time.Time) 
 		Expires:  exp,
 		HttpOnly: true,
 		Secure:   s.secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
@@ -92,7 +95,7 @@ func (s *Service) ClearCookie(w http.ResponseWriter) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   s.secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
