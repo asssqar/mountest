@@ -102,3 +102,29 @@ export type AttemptResult = {
   review: ReviewEntry[];
   guest?: Guest;
 };
+
+/** Один ряд истории попыток в админке. */
+export type AdminAttemptRow = {
+  id: string;
+  score: number | null;
+  total: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+  guest: { id?: string | null; firstName: string; lastName: string };
+  variant: { id: string; title: string; topic?: string | null };
+  subject: { id: string; name: string };
+};
+
+export type AdminAttemptsPage = {
+  items: AdminAttemptRow[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminAttemptsFilter = {
+  variantId?: string;
+  status?: "all" | "finished" | "active";
+  limit?: number;
+  offset?: number;
+};

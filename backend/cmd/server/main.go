@@ -151,6 +151,9 @@ func main() {
 			r.Post("/admin/variants/{id}/publish", adm.SetVariantPublished)
 			r.Post("/admin/variants/{id}/import-questions", adm.ImportQuestions)
 
+			// История попыток: editor — по своим вариантам, superadmin — все.
+			r.Get("/admin/attempts", adm.ListAttempts)
+
 			// Questions: ownership через variant внутри хендлеров.
 			r.Get("/admin/questions", adm.ListQuestions)
 			r.Get("/admin/questions/{id}", adm.GetQuestion)

@@ -9,6 +9,7 @@ import AdminLoginPage from "./admin/AdminLoginPage";
 import AdminSubjectsPage from "./admin/AdminSubjectsPage";
 import AdminVariantsPage from "./admin/AdminVariantsPage";
 import AdminQuestionsPage from "./admin/AdminQuestionsPage";
+import AdminAttemptsPage from "./admin/AdminAttemptsPage";
 import AdminUsersPage from "./admin/AdminUsersPage";
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
           <Route index element={<AdminSubjectsPage />} />
           <Route path="variants" element={<AdminVariantsPage />} />
           <Route path="questions" element={<AdminQuestionsPage />} />
+          <Route path="attempts" element={<AdminAttemptsPage />} />
           <Route path="users" element={<AdminUsersPage />} />
         </Route>
       </Route>

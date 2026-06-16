@@ -1,5 +1,7 @@
 import { api } from "../api/client";
 import type {
+  AdminAttemptsFilter,
+  AdminAttemptsPage,
   AdminMe,
   AdminPasswordReset,
   AdminUser,
@@ -70,6 +72,16 @@ export const adminApi = {
   deleteQuestion: (id: string) => api.delete<void>(`/admin/questions/${id}`),
 
   uploadImage: (file: File) => api.upload<{ url: string }>("/admin/upload", file),
+
+  listAttempts: (filter: AdminAttemptsFilter = {}) => {
+    const params = new URLSearchParams();
+    if (filter.variantId) params.set("variantId", filter.variantId);
+    if (filter.status && filter.status !== "all") params.set("status", filter.status);
+    if (filter.limit != null) params.set("limit", String(filter.limit));
+    if (filter.offset != null) params.set("offset", String(filter.offset));
+    const qs = params.toString();
+    return api.get<AdminAttemptsPage>(`/admin/attempts${qs ? `?${qs}` : ""}`);
+  },
 
   // ---- users (только superadmin) ----
   listUsers: () => api.get<AdminUser[]>("/admin/users"),

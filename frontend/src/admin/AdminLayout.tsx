@@ -81,6 +81,7 @@ export default function AdminLayout() {
         {isSuper ? <AdminTab to="/admin">Предметы</AdminTab> : null}
         <AdminTab to="/admin/variants">Варианты</AdminTab>
         <AdminTab to="/admin/questions">Вопросы</AdminTab>
+        <AdminTab to="/admin/attempts">История</AdminTab>
         {isSuper ? <AdminTab to="/admin/users">Пользователи</AdminTab> : null}
       </nav>
 
