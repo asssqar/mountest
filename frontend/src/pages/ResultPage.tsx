@@ -2,11 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { api, ApiError, resolveImageUrl, withAttemptToken } from "../api/client";
 import type { AttemptResult, ReviewEntry, ReviewStatus } from "../api/types";
+import NoCopy from "../components/NoCopy";
 import { getAttemptToken } from "../hooks/attemptTokens";
+import { useProtectTestContent } from "../hooks/useProtectTestContent";
 
 type Filter = "all" | "errors";
 
 export default function ResultPage() {
+  useProtectTestContent();
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const initial = (location.state as { result?: AttemptResult } | null)?.result ?? null;
@@ -99,11 +102,13 @@ export default function ResultPage() {
               </p>
             </div>
           ) : (
-            <ul className="space-y-3">
-              {visible.map((entry) => (
-                <ReviewCard key={entry.questionId} entry={entry} />
-              ))}
-            </ul>
+            <NoCopy>
+              <ul className="space-y-3">
+                {visible.map((entry) => (
+                  <ReviewCard key={entry.questionId} entry={entry} />
+                ))}
+              </ul>
+            </NoCopy>
           )}
         </section>
       ) : null}
@@ -204,6 +209,7 @@ function ReviewCard({ entry }: { entry: ReviewEntry }) {
         <img
           src={resolveImageUrl(entry.questionImageUrl) ?? ""}
           alt={entry.questionText}
+          draggable={false}
           className="max-h-80 w-full rounded-md border border-neutral-200 bg-white object-contain"
         />
       ) : null}

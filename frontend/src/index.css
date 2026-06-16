@@ -36,3 +36,26 @@
     @apply mb-1 block text-sm font-medium text-neutral-700;
   }
 }
+
+@layer utilities {
+  .no-copy {
+    -webkit-touch-callout: none;
+  }
+  .no-copy img {
+    -webkit-user-drag: none;
+  }
+}
+
+@media print {
+  body.test-protected * {
+    display: none !important;
+  }
+
+  body.test-protected::before {
+    display: block !important;
+    content: "Печать страницы с вопросами запрещена.";
+    padding: 2rem;
+    font-size: 1.25rem;
+    text-align: center;
+  }
+}

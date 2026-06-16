@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, resolveImageUrl, withAttemptToken } from "../api/client";
 import type { Attempt, AttemptResult } from "../api/types";
+import NoCopy from "../components/NoCopy";
 import { getAttemptToken } from "../hooks/attemptTokens";
+import { useProtectTestContent } from "../hooks/useProtectTestContent";
 
 export default function AttemptPage() {
+  useProtectTestContent();
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
 
@@ -163,7 +166,7 @@ export default function AttemptPage() {
       />
 
       {activeQuestion ? (
-        <div className="card space-y-4">
+        <NoCopy className="card space-y-4">
           <div className="flex items-baseline justify-between">
             <h2 className="text-base font-medium">
               Вопрос {activeIdx + 1} из {total}
@@ -177,6 +180,7 @@ export default function AttemptPage() {
             <img
               src={resolveImageUrl(activeQuestion.imageUrl) ?? ""}
               alt=""
+              draggable={false}
               className="max-h-96 w-full rounded-md border border-neutral-200 bg-white object-contain"
             />
           ) : null}
@@ -204,7 +208,7 @@ export default function AttemptPage() {
               );
             })}
           </ul>
-        </div>
+        </NoCopy>
       ) : null}
 
       <div className="flex items-center justify-between">
