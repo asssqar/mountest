@@ -153,6 +153,7 @@ func main() {
 
 			// История попыток: editor — по своим вариантам, superadmin — все.
 			r.Get("/admin/attempts", adm.ListAttempts)
+			r.Delete("/admin/attempts/{id}", adm.DeleteAttempt)
 
 			// Questions: ownership через variant внутри хендлеров.
 			r.Get("/admin/questions", adm.ListQuestions)

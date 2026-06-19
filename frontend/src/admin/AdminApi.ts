@@ -82,6 +82,7 @@ export const adminApi = {
     const qs = params.toString();
     return api.get<AdminAttemptsPage>(`/admin/attempts${qs ? `?${qs}` : ""}`);
   },
+  deleteAttempt: (id: string) => api.delete<void>(`/admin/attempts/${id}`),
 
   // ---- users (только superadmin) ----
   listUsers: () => api.get<AdminUser[]>("/admin/users"),

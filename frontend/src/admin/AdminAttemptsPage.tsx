@@ -16,6 +16,7 @@ export default function AdminAttemptsPage() {
   const [status, setStatus] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Список вариантов нужен только для селекта-фильтра. Грузим один раз.
   useEffect(() => {
@@ -46,6 +47,20 @@ export default function AdminAttemptsPage() {
       cancelled = true;
     };
   }, [variantId, status, offset]);
+
+  async function handleDelete(id: string) {
+    if (!window.confirm("Удалить эту попытку? Действие необратимо.")) return;
+    setDeletingId(id);
+    try {
+      await adminApi.deleteAttempt(id);
+      setItems((prev) => prev.filter((it) => it.id !== id));
+      setTotal((t) => t - 1);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Не удалось удалить попытку");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   // При смене фильтра возвращаемся на первую страницу.
   function changeVariant(id: string) {
@@ -118,11 +133,17 @@ export default function AdminAttemptsPage() {
                 <th className="px-3 py-2 whitespace-nowrap">Начата</th>
                 <th className="px-3 py-2 whitespace-nowrap">Длительность</th>
                 <th className="px-3 py-2">Статус</th>
+                <th className="px-3 py-2" />
               </tr>
             </thead>
             <tbody>
               {items.map((it) => (
-                <AttemptsRow key={it.id} row={it} />
+                <AttemptsRow
+                  key={it.id}
+                  row={it}
+                  deleting={deletingId === it.id}
+                  onDelete={() => handleDelete(it.id)}
+                />
               ))}
             </tbody>
           </table>
@@ -156,7 +177,15 @@ export default function AdminAttemptsPage() {
   );
 }
 
-function AttemptsRow({ row }: { row: AdminAttemptRow }) {
+function AttemptsRow({
+  row,
+  deleting,
+  onDelete,
+}: {
+  row: AdminAttemptRow;
+  deleting: boolean;
+  onDelete: () => void;
+}) {
   const finished = row.finishedAt != null;
   const percent =
     row.score != null && row.total != null && row.total > 0
@@ -205,6 +234,16 @@ function AttemptsRow({ row }: { row: AdminAttemptRow }) {
             идёт
           </span>
         )}
+      </td>
+      <td className="px-3 py-2 text-right">
+        <button
+          className="text-xs text-neutral-400 hover:text-red-600 disabled:opacity-40 transition-colors"
+          disabled={deleting}
+          onClick={onDelete}
+          title="Удалить попытку"
+        >
+          {deleting ? "…" : "Удалить"}
+        </button>
       </td>
     </tr>
   );

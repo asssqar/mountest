@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/mountest/backend/internal/auth"
@@ -182,6 +183,45 @@ func (h *AdminHandler) ListAttempts(w http.ResponseWriter, r *http.Request) {
 		Limit:  limit,
 		Offset: offset,
 	})
+}
+
+// DeleteAttempt — DELETE /api/admin/attempts/{id}
+// Superadmin удаляет любую попытку, editor — только по своим вариантам.
+// attempt_answers удаляются каскадно (ON DELETE CASCADE в схеме).
+func (h *AdminHandler) DeleteAttempt(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseUUID(chi.URLParam(r, "id"))
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+
+	var sql string
+	var args []any
+
+	if auth.IsSuperadmin(r.Context()) {
+		sql = `DELETE FROM attempts WHERE id=$1`
+		args = []any{id}
+	} else {
+		adminID := currentAdminUUID(r.Context())
+		if adminID == uuid.Nil {
+			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		// Editor может удалять только попытки по своим вариантам.
+		sql = `DELETE FROM attempts a USING variants v WHERE a.id=$1 AND a.variant_id=v.id AND v.created_by=$2`
+		args = []any{id, adminID}
+	}
+
+	tag, err := h.Pool.Exec(r.Context(), sql, args...)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func parseClampedInt(raw string, def, min, max int) (int, error) {
