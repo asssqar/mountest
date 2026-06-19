@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, resolveImageUrl, withAttemptToken } from "../api/client";
 import type { Attempt, AttemptResult } from "../api/types";
 import NoCopy from "../components/NoCopy";
-import { getAttemptToken } from "../hooks/attemptTokens";
+import { getAttemptToken, clearActiveAttempt } from "../hooks/attemptTokens";
 import { useProtectTestContent } from "../hooks/useProtectTestContent";
 
 export default function AttemptPage() {
@@ -36,6 +36,7 @@ export default function AttemptPage() {
       .get<Attempt>(`/attempts/${id}`, withAttemptToken(token))
       .then((a) => {
         if (a.finishedAt) {
+          clearActiveAttempt(a.variantId);
           nav(`/attempts/${a.id}/result`, { replace: true });
           return;
         }
@@ -57,6 +58,7 @@ export default function AttemptPage() {
         undefined,
         withAttemptToken(token),
       );
+      clearActiveAttempt(attempt.variantId);
       nav(`/attempts/${attempt.id}/result`, { replace: true, state: { result: res } });
     } catch (e) {
       finishedRef.current = false;

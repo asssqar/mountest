@@ -189,6 +189,20 @@ func main() {
 		}
 	}()
 
+	go func() {
+		pub.FinishAbandoned(ctx)
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				pub.FinishAbandoned(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop

@@ -229,6 +229,7 @@ func (h *PublicHandler) GetAttempt(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAttemptAuth(w, r, id) {
 		return
 	}
+	h.maybeAutoFinish(r.Context(), id)
 	out, err := h.loadAttempt(r.Context(), id, false)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

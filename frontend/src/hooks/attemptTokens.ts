@@ -4,6 +4,7 @@
 // и потом достаём по attemptId на чтение/сохранение/завершение.
 
 const KEY = "mountest_attempt_tokens";
+const ACTIVE_KEY = "mountest_active_attempts"; // variantId → attemptId
 
 type TokenMap = Record<string, string>;
 
@@ -41,4 +42,40 @@ export function clearAttemptToken(attemptId: string) {
   const map = readAll();
   delete map[attemptId];
   writeAll(map);
+}
+
+// --- активные попытки (variantId → attemptId) ---
+
+function readActive(): TokenMap {
+  try {
+    const raw = localStorage.getItem(ACTIVE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") return parsed as TokenMap;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function writeActive(map: TokenMap) {
+  try {
+    localStorage.setItem(ACTIVE_KEY, JSON.stringify(map));
+  } catch {}
+}
+
+export function saveActiveAttempt(variantId: string, attemptId: string) {
+  const m = readActive();
+  m[variantId] = attemptId;
+  writeActive(m);
+}
+
+export function getActiveAttemptId(variantId: string): string | null {
+  return readActive()[variantId] ?? null;
+}
+
+export function clearActiveAttempt(variantId: string) {
+  const m = readActive();
+  delete m[variantId];
+  writeActive(m);
 }

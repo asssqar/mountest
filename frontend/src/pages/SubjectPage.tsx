@@ -3,7 +3,7 @@ import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import type { Attempt, Subject, Variant } from "../api/types";
 import { useGuest } from "../hooks/useGuest";
-import { saveAttemptToken } from "../hooks/attemptTokens";
+import { saveAttemptToken, saveActiveAttempt, getActiveAttemptId, getAttemptToken } from "../hooks/attemptTokens";
 
 export default function SubjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -44,6 +44,7 @@ export default function SubjectPage() {
       if (att.attemptToken) {
         saveAttemptToken(att.id, att.attemptToken);
       }
+      saveActiveAttempt(variantId, att.id);
       nav(`/attempts/${att.id}`);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "Не удалось начать тест");
@@ -79,7 +80,10 @@ export default function SubjectPage() {
       ) : null}
 
       <ul className="space-y-3">
-          {variants.map((v) => (
+          {variants.map((v) => {
+            const activeAttemptId = getActiveAttemptId(v.id);
+            const canResume = activeAttemptId != null && getAttemptToken(activeAttemptId) != null;
+            return (
             <li key={v.id} className="card flex items-center justify-between">
               <div>
                 <p className="text-base font-medium">{v.title}</p>
@@ -93,15 +97,37 @@ export default function SubjectPage() {
                   {v.questionsCount} вопросов · {v.durationMinutes} мин (опц. таймер)
                 </p>
               </div>
-              <button
-                className="btn-primary"
-                disabled={!guest || startingId === v.id || v.questionsCount === 0}
-                onClick={() => startVariant(v.id)}
-              >
-                {startingId === v.id ? "Запуск..." : "Начать"}
-              </button>
+              <div className="flex items-center gap-2">
+                {canResume ? (
+                  <>
+                    <button
+                      className="btn-secondary text-sm"
+                      disabled={!guest || startingId === v.id}
+                      onClick={() => startVariant(v.id)}
+                    >
+                      Начать заново
+                    </button>
+                    <button
+                      className="btn-primary"
+                      disabled={!guest}
+                      onClick={() => nav(`/attempts/${activeAttemptId}`)}
+                    >
+                      Продолжить
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="btn-primary"
+                    disabled={!guest || startingId === v.id || v.questionsCount === 0}
+                    onClick={() => startVariant(v.id)}
+                  >
+                    {startingId === v.id ? "Запуск..." : "Начать"}
+                  </button>
+                )}
+              </div>
             </li>
-          ))}
+            );
+          })}
       </ul>
     </div>
   );
