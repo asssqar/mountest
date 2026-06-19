@@ -47,6 +47,17 @@ export default function AttemptPage() {
       .finally(() => setLoading(false));
   }, [id, nav]);
 
+  // Предупреждаем браузер если пользователь пытается закрыть вкладку во время теста
+  useEffect(() => {
+    if (!attempt) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [attempt]);
+
   const finishAttempt = useCallback(async () => {
     if (!attempt || finishedRef.current) return;
     finishedRef.current = true;
@@ -134,26 +145,27 @@ export default function AttemptPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-sm text-neutral-500">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm text-neutral-500">
             {attempt.subjectName} · {attempt.guest ? `${attempt.guest.firstName} ${attempt.guest.lastName}` : ""}
           </p>
-          <h1 className="text-xl font-semibold">{attempt.variantTitle}</h1>
+          <h1 className="text-lg font-semibold sm:text-xl">{attempt.variantTitle}</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {timerEnabled ? (
             <>
               <span className="rounded-md bg-neutral-900 px-3 py-1 text-sm font-mono text-white">
                 {formatTime(secondsLeft)}
               </span>
-              <button className="btn-ghost" onClick={stopTimer}>
-                Выкл. таймер
+              <button className="btn-ghost text-sm" onClick={stopTimer}>
+                Выкл.
               </button>
             </>
           ) : (
-            <button className="btn-secondary" onClick={startTimer}>
-              Включить таймер ({attempt.durationMinutes} мин)
+            <button className="btn-secondary text-sm" onClick={startTimer}>
+              <span className="hidden sm:inline">Включить таймер ({attempt.durationMinutes} мин)</span>
+              <span className="sm:hidden">Таймер {attempt.durationMinutes} мин</span>
             </button>
           )}
         </div>
@@ -166,6 +178,19 @@ export default function AttemptPage() {
         questions={attempt.questions}
         onPick={setActiveIdx}
       />
+
+      <div>
+        <div className="mb-1 flex justify-between text-xs text-neutral-500">
+          <span>Отвечено</span>
+          <span>{answeredCount} / {total}</span>
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-100">
+          <div
+            className="h-1.5 rounded-full bg-neutral-900 transition-all duration-300"
+            style={{ width: total > 0 ? `${(answeredCount / total) * 100}%` : "0%" }}
+          />
+        </div>
+      </div>
 
       {activeQuestion ? (
         <NoCopy className="card space-y-4">
@@ -213,26 +238,23 @@ export default function AttemptPage() {
         </NoCopy>
       ) : null}
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <button
-          className="btn-secondary"
+          className="btn-secondary min-w-[80px]"
           disabled={activeIdx === 0}
           onClick={() => setActiveIdx((i) => Math.max(0, i - 1))}
         >
           ← Назад
         </button>
-        <p className="text-sm text-neutral-500">
-          Отвечено: {answeredCount} / {total}
-        </p>
         {activeIdx < total - 1 ? (
           <button
-            className="btn-primary"
+            className="btn-primary min-w-[80px]"
             onClick={() => setActiveIdx((i) => Math.min(total - 1, i + 1))}
           >
             Вперёд →
           </button>
         ) : (
-          <button className="btn-primary" disabled={submitting} onClick={finishAttempt}>
+          <button className="btn-primary min-w-[80px]" disabled={submitting} onClick={finishAttempt}>
             {submitting ? "Завершение..." : "Завершить тест"}
           </button>
         )}
@@ -256,29 +278,31 @@ function QuestionGrid({
 }) {
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-3">
-      <div className="flex flex-wrap gap-2">
-        {Array.from({ length: total }).map((_, i) => {
-          const q = questions[i];
-          const answered = q && (answers[q.id] ?? []).length > 0;
-          const isActive = i === activeIdx;
-          return (
-            <button
-              key={i}
-              onClick={() => onPick(i)}
-              className={[
-                "h-9 w-9 rounded-md border text-sm font-medium transition-colors",
-                isActive
-                  ? "border-neutral-900 bg-neutral-900 text-white"
-                  : answered
-                    ? "border-neutral-300 bg-neutral-100 text-neutral-900"
-                    : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50",
-              ].join(" ")}
-              aria-current={isActive ? "true" : undefined}
-            >
-              {i + 1}
-            </button>
-          );
-        })}
+      <div className="max-h-32 overflow-y-auto sm:max-h-none">
+        <div className="flex flex-wrap gap-1.5 sm:gap-2">
+          {Array.from({ length: total }).map((_, i) => {
+            const q = questions[i];
+            const answered = q && (answers[q.id] ?? []).length > 0;
+            const isActive = i === activeIdx;
+            return (
+              <button
+                key={i}
+                onClick={() => onPick(i)}
+                className={[
+                  "h-8 w-8 rounded-md border text-xs font-medium transition-colors sm:h-9 sm:w-9 sm:text-sm",
+                  isActive
+                    ? "border-neutral-900 bg-neutral-900 text-white"
+                    : answered
+                      ? "border-neutral-300 bg-neutral-100 text-neutral-900"
+                      : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50",
+                ].join(" ")}
+                aria-current={isActive ? "true" : undefined}
+              >
+                {i + 1}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
